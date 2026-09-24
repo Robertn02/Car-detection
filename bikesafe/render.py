@@ -2,6 +2,8 @@
 
 When bikesafe.infrastructure has run, the clip also shows the painted lane lines it found (green when the rider is in
 a bike lane), traffic lights with their state, traffic signs, and the bike-lane / signal status in the banner.
+Licence plates are blurred (bikesafe.plates; --no-blur to switch off), and a vehicle boxed twice by the detector
+(car + truck) is drawn once, in the colour of its vehicle-level relation.
 
     python -m bikesafe.render VID_20260224_162848_00_006 --start-s 300 --duration-s 60
 """
@@ -17,6 +19,7 @@ import pandas as pd
 
 from bikesafe.common import RELATION_COLOURS_BGR, RELATIONS, ROOT, open_video, read_json
 from bikesafe.infrastructure import REF_Z, parse_lines
+from bikesafe.plates import PlateBlurrer
 
 LABELS = {
     "ego_lane": "in my lane", "adjacent_same": "other lane, same way", "oncoming": "oncoming",
@@ -87,6 +90,7 @@ def main() -> None:
     parser.add_argument("--min-box-h", type=float, default=18)
     parser.add_argument("--no-infrastructure", action="store_true", help="Do not draw lane lines, signals and signs")
     parser.add_argument("--no-vehicles", action="store_true", help="Draw only the road infrastructure and the banner")
+    parser.add_argument("--no-blur", action="store_true", help="Do not blur licence plates")
     args = parser.parse_args()
 
     calib = read_json(args.analysis / args.video / "calibration.json")
@@ -94,7 +98,12 @@ def main() -> None:
     kin = pd.read_parquet(args.analysis / args.video / "kinematics.parquet")
     tracks = pd.read_csv(args.corpus / args.video / "tracks_typed.csv")
     line = pd.read_csv(args.corpus / args.video / "timeline_1s.csv").set_index("second")
-    kin = kin.merge(tracks[["track_id", "relation", "relation_confidence"]], on="track_id", how="left")
+    if "vehicle_relation" in tracks:  # one colour per physical vehicle
+        tracks = tracks.assign(relation=tracks.vehicle_relation)
+    extra = [c for c in ("n_det",) if c in tracks]
+    kin = kin.merge(tracks[["track_id", "relation", "relation_confidence", *extra]], on="track_id", how="left")
+    if "vehicle_id" not in kin:
+        kin["vehicle_id"] = kin.track_id
     end_s = args.start_s + args.duration_s
     kin = kin[(kin.time_s >= args.start_s) & (kin.time_s < end_s)]
     frames = kin.groupby("frame")
@@ -116,6 +125,7 @@ def main() -> None:
     cap = open_video(args.videos / f"{args.video}.mp4")
     cap.set(cv2.CAP_PROP_POS_FRAMES, int(args.start_s * fps))
     idx = int(args.start_s * fps)
+    blurrer = None if args.no_blur else PlateBlurrer()
     targets = iter(processed)
     target = next(targets, None)
     while target is not None:
@@ -127,6 +137,9 @@ def main() -> None:
             continue
         _, image = cap.retrieve()
         idx += 1
+        in_frame = frames.get_group(target)
+        if blurrer is not None:  # before anything is drawn, on the full-resolution frame
+            blurrer(image, in_frame[["x1", "y1", "x2", "y2"]].to_numpy(float), in_frame.track_id.tolist())
         second = int(target / fps)
         info = line.loc[second] if second in line.index else None
         in_bike_lane = bool(info is not None and "in_bike_lane" in line and str(info.in_bike_lane) == "True")
@@ -136,7 +149,9 @@ def main() -> None:
             if abs(sample.time_s - target / fps) <= SAMPLE_HOLD_S:
                 draw_lane_lines(image, sample, calib, in_bike_lane)
                 draw_objects(image, objects[objects.frame == sample.frame])
-        rows = frames.get_group(target) if not args.no_vehicles else frames.get_group(target).iloc[:0]
+        rows = in_frame if not args.no_vehicles else in_frame.iloc[:0]
+        if "n_det" in rows:  # a vehicle boxed twice is drawn once, with its longest track's box
+            rows = rows.sort_values("n_det", ascending=False).drop_duplicates("vehicle_id")
         for r in rows.itertuples():
             if r.box_h < args.min_box_h or not isinstance(r.relation, str):
                 continue
@@ -165,7 +180,8 @@ def main() -> None:
         target = next(targets, None)
     writer.release()
     cap.release()
-    print(f"wrote {out}")
+    blurred = "" if blurrer is None else f"; {blurrer.plates_found + blurrer.plates_held} plate regions blurred"
+    print(f"wrote {out}{blurred}")
 
 
 if __name__ == "__main__":

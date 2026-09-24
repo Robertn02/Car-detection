@@ -1,0 +1,10 @@
+file,frames,plate_regions
+demos/typology_005_following_280s.mp4,540,1403
+demos/typology_006_bikelane_440s.mp4,720,2793
+demos/typology_006_parked_700s.mp4,540,1528
+demos/infrastructure_006_bikelane_452s.mp4,480,2140
+demos/best_tracking_demo.mp4,1802,4012
+demos/tracker_visual_comparison.mp4,300,1409
+results/tracking_10s.jpg,1,5
+results/tracking_30s.jpg,1,8
+results/tracking_50s.jpg,1,8

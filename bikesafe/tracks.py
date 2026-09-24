@@ -16,11 +16,13 @@ from bikesafe.geometry import (DEFAULT_HFOV_DEG, detection_kinematics, ego_from_
                                flow_grid_reference)
 from bikesafe.infrastructure import REF_Z, parse_lines, per_second_summary
 from bikesafe.scene import crop_scores, scene_probabilities
+from bikesafe.stitch import stitch, vehicle_ids
 
 STATIC_MPS = 1.5
 CROSS_MPS = 1.5
-# 3: depth-free flow motion cues and lane-paint relations; bikesafe.run recomputes tracks written by older versions
-FEATURES_VERSION = 3
+# 3: depth-free flow motion cues and lane-paint relations; 4: vehicle ids (bikesafe.stitch).
+# bikesafe.run recomputes tracks written by older versions.
+FEATURES_VERSION = 4
 
 
 def q(series: pd.Series, p: float) -> float:
@@ -375,6 +377,11 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
         # only where the background visibly moves (> 2 px per step), otherwise the ratio is noise
         kin["grid_proj"] = np.where(norm2 > 4.0, (body * ref).sum(axis=1) / np.maximum(norm2, 1e-6), np.nan)
 
+    # one id per physical vehicle: duplicate boxes merged, tracks split by the tracker joined
+    links = stitch(dets, calib.width, meta["processed_fps"])
+    vehicle_of = vehicle_ids(dets.track_id[dets.track_id >= 0].unique(), links)
+    kin["vehicle_id"] = kin.track_id.map(vehicle_of).fillna(kin.track_id).astype(int)
+
     clip_path = perception_dir / "clip.npz"
     scene = scene_probabilities(clip_path, meta["source_fps"], probe=scene_probe) if clip_path.exists() else None
     rows = []
@@ -408,7 +415,11 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
     if len(tracks):
         tracks = tracks.merge(neighbour_features(tracks), on="track_id", how="left")
     tracks["rule_relation"] = tracks.apply(rule_relation, axis=1) if len(tracks) else []
+    if len(tracks):
+        tracks["vehicle_id"] = tracks.track_id.map(vehicle_of).fillna(tracks.track_id).astype(int)
+        tracks["vehicle_tracks"] = tracks.groupby("vehicle_id").track_id.transform("size")
 
+    links.to_parquet(out_dir / "vehicle_links.parquet", index=False)
     kin.to_parquet(out_dir / "kinematics.parquet", index=False)
     ego.to_parquet(out_dir / "ego.parquet", index=False)
     tracks.to_parquet(out_dir / "tracks.parquet", index=False)

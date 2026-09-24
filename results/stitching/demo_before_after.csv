@@ -1,0 +1,13 @@
+measure,before (tracks),after (vehicles)
+per_min_parked,81.2,80.8
+per_min_adjacent_same,3.2,3.2
+per_min_ego_lane,2.0,2.0
+per_min_cross_side,7.6,7.2
+events_overtaken_by_vehicle,4.0,4.0
+events_close_pass_under_1p5m,3.0,3.0
+events_vehicle_close_in_my_lane,9.0,5.0
+events_crossing_traffic_near,18.0,17.0
+door_zone_seconds,74.0,74.0
+vehicles_visible_per_second_typology_005_following_280s,6.73,6.24
+vehicles_visible_per_second_typology_006_bikelane_440s,10.55,10.03
+vehicles_visible_per_second_typology_006_parked_700s,11.38,10.69

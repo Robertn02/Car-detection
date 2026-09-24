@@ -86,6 +86,17 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      distance, solid and yellow ones among them, whether it sits inside the rider's lane, and the share of the track
      during which the rider was in a bike lane.
    - Each track is summarised into ~90 features; a readable rule baseline (`rule_relation`) turns them into a relation.
+   - *One id per physical vehicle (version 4)* - `bikesafe.stitch`. Two tracker artefacts make one vehicle look like
+     several. **Duplicates**: the detector suppresses overlapping boxes class by class, so a pickup, van or SUV is
+     often boxed twice at once, as "car" and as "truck" or "bus"; two tracks that coexist with a mean IoU >= 0.7 over at
+     least half of the shorter one are one vehicle. **Breaks**: a missed detection or short occlusion makes the tracker
+     start a new id; the last detection of a track is extrapolated forward and the first detection of a later track
+     backward to the middle of the gap, and the pair is joined when the predictions meet and the image velocities agree
+     (`e + 0.5 dv <= 0.45`, both relative to box height), the gap is <= 2 s, class and size agree, neither end is at
+     the side edge of the image, no other vehicle fits about as well, and the first vehicle is gone before the second
+     appears. Tracks keep their own features and labels; `vehicle_id` groups them, and `vehicle_links.parquet` lists
+     every join with its evidence. On the demo clips the joins were checked by eye: all break joins and the 12
+     duplicate merges with the lowest overlap were correct (`reports/UPGRADE_REPORT_2026-09.pdf`).
    - Track tables record `features_version`; `bikesafe.run` recomputes tables written by older versions.
 6. **Learning and evaluation** - `bikesafe.cards`, `bikesafe.train`
    - Track cards (start / middle / end with path / zoom) are sampled across all videos and relation strata and
@@ -95,16 +106,34 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
    - `results/typology/feature_ablation.csv` scores the version-2 features against v2 + flow and the full version 3,
      for each model, on the same labels - the direct measure of what the new features are worth.
    - The riding context is scored for the CLIP probe alone and for the probe fused with the lane-paint detector.
-7. **Outputs** - `bikesafe.exposure`, `bikesafe.render`
+7. **Licence plates** - `bikesafe.plates`
+   - *Blurring.* A small plate detector (YOLOv9-tiny ONNX from open-image-models, 7 MB, downloaded on first use) runs on
+     every vehicle box >= 40 px tall, cropped from the full-resolution frame; a plate found on a track stays blurred for
+     6 more frames at the same place on the vehicle. `bikesafe.render` blurs by default (`--no-blur`), and
+     `python -m bikesafe.plates blur <videos or images>` blurs existing files.
+   - *Identity audit (opt-in, `bikesafe.run --read-plates`).* Plates of large vehicles are read on up to 6 frames per
+     track by a small OCR model (fast-plate-ocr). The text never leaves the process: each read becomes an HMAC-SHA256
+     hash under a random key made for that run and never stored, so hashes compare only within one ride, cannot be
+     reversed and cannot follow a vehicle across rides. A plate counts only if it sits in the lower middle of its own
+     vehicle's box (the neighbour's plate often shows in a crop) and two reads agree. `plates.parquet` (hashes and
+     counts) stays in the analysis folder; the corpus outputs get counts only (`identity_audit.json`, `plate_*`
+     columns): tracks with one plate split over several vehicle ids (missed joins, or a vehicle seen again later) and
+     vehicle ids carrying two plates (wrong joins).
+8. **Outputs** - `bikesafe.exposure`, `bikesafe.render`
    - `results/corpus/<video>/tracks_typed.csv`, `timeline_1s.csv` (with local timestamps for a Strava join, bike lane,
      signal state and signs per second), `events.csv` (now including `stop_sign` and `red_light_wait`), `signs.csv`
      (one row per distinct sign / signal head), and `results/corpus/corpus_summary.csv`. The summary adds
      `minutes_in_painted_bike_lane`, `minutes_lane_paint_unknown` (no usable paint view), `minutes_scene_changed_by_paint`
      (seconds whose context differs from the CLIP-only one; on a ride without CLIP that is every paint-decided second),
      `events_stop_sign`, `events_red_light_wait`, `red_light_wait_seconds` and `seconds_with_signal_ahead`.
+   - Counts are per physical vehicle (version 4): each vehicle gets one relation, the detection-weighted vote of its
+     tracks' class probabilities; `per_min_*`, `vehicles_*`, the per-second counts and the events use vehicles, and
+     each event is reported once per vehicle. `tracks_*` keeps the per-track count of earlier runs for comparison, and
+     `duplicate_links` / `break_links` say how many joins were made.
    - The riding context fuses CLIP (which separates paths from roads well) with the lane-paint detector (which decides
      bike lane vs shared road wherever it sees paint); the CLIP-only context is kept as `scene_clip`.
-   - Colour-coded overlay clips in `demos/`, now with lane lines, signals (by state) and signs.
+   - Colour-coded overlay clips in `demos/`, now with lane lines, signals (by state) and signs, one box per vehicle and
+     licence plates blurred.
 
 ## Running at scale on a GPU workstation
 
@@ -144,3 +173,9 @@ to `bikesafe.perceive`.
   reliable, their fine types are not.
 - The first labels were produced by AI-assisted visual review and should be spot-checked by a human reviewer
   (`labeler` column). The pipeline retrains from the CSVs.
+- Vehicle ids join a vehicle only across gaps of up to 2 s. A vehicle that leaves the view and returns later (for
+  example leapfrogging between traffic lights) is a new vehicle; the opt-in plate audit counts such returns.
+- The approved 300-frame reference sequence labels the second (truck) box of a doubly detected pickup as eleven
+  separate short identities, so identity scores against it penalise correct duplicate merging; see the upgrade report.
+- Plate blurring finds plates on vehicles the detector boxed (>= 40 px tall); a plate on an undetected vehicle is not
+  blurred. `data/approved_sequence.mp4` is benchmark input and is left unblurred.

@@ -15,3 +15,6 @@ transformers==5.17.0
 timm==1.0.29
 lap==0.5.13
 motmetrics==1.4.0
+open-image-models==0.6.0  # licence-plate detector (bikesafe.plates): blurring, identity audit
+fast-plate-ocr==1.1.0  # plate reader, used only by the opt-in identity audit
+onnxruntime==1.30.0

@@ -3,8 +3,9 @@
     python -m bikesafe.run D:/rides --out-root D:/rides_out [--target-fps 12] [--render-minutes 1] [--jobs 4]
 
 Stages (each resumable): GPU perception -> CPU ego-motion -> depth/lane pass -> lights, signs and bike lanes ->
-geometry/track features -> typology models + exposure outputs -> optional overlay clip per video. Uses the trained
-models in models/typology; without them it falls back to the rule baseline.
+[opt-in: hashed licence plates for the identity audit] -> geometry/track features and vehicle ids -> typology models
++ exposure outputs -> optional overlay clip per video (licence plates blurred). Uses the trained models in
+models/typology; without them it falls back to the rule baseline.
 
 Faster than running the stages by hand:
   * CPU-only stages (ego-motion, track features) run for several rides at once (--jobs, default: CPU cores / 2).
@@ -77,6 +78,8 @@ def main() -> None:
                         help="Skip the depth pass (its lane counts are superseded by the lane-paint features)")
     parser.add_argument("--skip-infrastructure", action="store_true", help="Skip lights, signs and bike lanes")
     parser.add_argument("--infra-model", default=None, help="YOLOE-26 weights for lights, signs and stencils")
+    parser.add_argument("--read-plates", action="store_true",
+                        help="Opt-in: read licence plates into per-ride keyed hashes (text never stored) to audit vehicle ids")
     args = parser.parse_args()
 
     env = dict(os.environ)
@@ -103,6 +106,9 @@ def main() -> None:
         model = ["--model", args.infra_model] if args.infra_model else []
         run(["bikesafe.infrastructure", *perception_dirs, "--analysis", str(analysis), "--videos", video_dir,
              "--sample-fps", str(args.sample_fps), *model], env, f"bikesafe.infrastructure {rides}")
+    if args.read_plates:
+        run(["bikesafe.plates", "read", *perception_dirs, "--analysis", str(analysis), "--videos", video_dir], env,
+            f"bikesafe.plates read {rides}")
     pending = [perception / v.stem for v in videos if tracks_outdated(analysis / v.stem)]
     run_parallel([["bikesafe.tracks", str(p), "--out", str(analysis)] for p in pending], args.jobs, env)
     run(["bikesafe.exposure", "--analysis", str(analysis), "--perception", str(perception), "--models", str(args.models),

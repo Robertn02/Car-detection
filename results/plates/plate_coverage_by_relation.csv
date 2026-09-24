@@ -1,0 +1,7 @@
+relation,tracks,plate_at_least_40px,plate_at_least_60px,plate_at_least_60px_not_side_view,median_plate_px
+"other lane, same way",225,0.787,0.729,0.542,108.3
+in my lane,136,0.39,0.316,0.213,25.2
+parked,4853,0.505,0.358,0.177,40.4
+oncoming,232,0.151,0.073,0.06,21.3
+side road / crossing,1166,0.152,0.069,0.047,21.6
+all,6612,0.438,0.309,0.163,34.5

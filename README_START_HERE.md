@@ -1,18 +1,24 @@
 # Vehicle Detection and Tracking - Submission Package
 
-## Current milestone: bike lanes, traffic signs and signals, sharper motion cues, faster runs
+## Current milestone: bike lanes, traffic signs and signals, sharper motion cues, one id per vehicle, plate privacy, faster runs
 
 Response to *"accuracy is still not acceptable, and there is no bike lane or traffic sign detection"*.
 
-1. Read [reports/INFRASTRUCTURE_AND_ACCURACY_REPORT.md](reports/INFRASTRUCTURE_AND_ACCURACY_REPORT.md): what was
-   added, how it was checked on real footage, and exactly what still has to be measured on the full corpus.
+1. Read the upgrade report [reports/UPGRADE_REPORT_2026-09.pdf](reports/UPGRADE_REPORT_2026-09.pdf) (10 pages, for
+   submission; rebuilt from the result files by `python scripts/build_upgrade_report.py`). The working notes behind
+   it are in [reports/INFRASTRUCTURE_AND_ACCURACY_REPORT.md](reports/INFRASTRUCTURE_AND_ACCURACY_REPORT.md).
 2. New stage `bikesafe.infrastructure`: painted bike lanes (lane lines and bicycle stencils in a bird's-eye view of
    the road), traffic signals with their state (red / yellow / green), stop signs and other traffic signs. Its
    per-second output joins the timeline, fixes the riding context, and feeds new events (`stop_sign`,
    `red_light_wait`).
 3. New depth-free motion features from the optical flow the perception pass already stored, aimed at the most
    frequent error (moving vehicles called parked), plus each vehicle's position relative to the painted lines.
-4. Faster: FP16 on the GPU, optional hardware video decoding, CPU stages in parallel across rides, and a per-stage
+4. One id per physical vehicle (`bikesafe.stitch`): duplicate boxes on one pickup or van (car + truck) are merged and
+   tracks broken by a missed detection are joined, so counts, per-second exposure and events are per vehicle.
+5. Licence plates (`bikesafe.plates`): blurred in every rendered clip, and the demo videos and snapshots in this
+   repository are blurred. Plate reading is only an opt-in identity check (`--read-plates`) that stores keyed hashes,
+   never plate text.
+6. Faster: FP16 on the GPU, optional hardware video decoding, CPU stages in parallel across rides, and a per-stage
    timing summary.
 
 On your GPU machine, one command reuses everything already computed, runs only what is new, and retrains:
@@ -23,7 +29,8 @@ python -m bikesafe.train                                                       #
 python -m bikesafe.exposure --analysis work/analysis --perception work/perception   # re-apply the new model
 ```
 
-`results/typology/feature_ablation.csv` then shows what the new features are worth on the 378 labelled tracks.
+`results/typology/feature_ablation.csv` then shows what the new features are worth on the 378 labelled tracks, and
+`python scripts/build_upgrade_report.py` rebuilds the PDF with those corpus numbers.
 
 ## Previous milestone: vehicle typology relative to the rider
 
@@ -31,7 +38,7 @@ Answering the feedback *"would you be able to distinguish cars in my lane, cars 
 on side roads or across the median?"* — yes, and it now runs over all six rides (112 minutes).
 
 1. Read [reports/VEHICLE_TYPOLOGY_REPORT.md](reports/VEHICLE_TYPOLOGY_REPORT.md).
-2. Watch [demos/typology_006_bikelane_440s.mp4](demos/typology_006_bikelane_440s.mp4) — boxes coloured by relation to the rider.
+2. Watch [demos/typology_006_bikelane_440s.mp4](demos/typology_006_bikelane_440s.mp4) — boxes coloured by relation to the rider (plates blurred).
 3. Inspect [results/corpus/](results/corpus/) for per-ride vehicle tables, per-second timelines (Strava-joinable) and events.
 4. Pipeline documentation: [docs/TYPOLOGY_PIPELINE.md](docs/TYPOLOGY_PIPELINE.md); labeling protocol:
    [data/typology/LABELING_GUIDE.md](data/typology/LABELING_GUIDE.md).

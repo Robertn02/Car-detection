@@ -56,7 +56,8 @@ FLOW_FEATURES = [
 LANE_FEATURES = ["paint_lines_between_med", "paint_solid_between_max", "paint_yellow_between_max", "in_rider_lane_frac",
                  "rider_bike_lane_frac"]
 PHYSICAL_FEATURES = PHYSICAL_FEATURES_V2 + FLOW_FEATURES + LANE_FEATURES
-NON_FEATURES = {"video", "track_id", "t_start", "t_end", "scene", "ride_scene", "rule_relation", "label", "labeler", "notes", "card_id"}
+NON_FEATURES = {"video", "track_id", "t_start", "t_end", "scene", "ride_scene", "rule_relation", "label", "labeler", "notes",
+                "card_id", "vehicle_id", "vehicle_tracks", "vehicle_relation"}
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
