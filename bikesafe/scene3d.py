@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from bikesafe.common import ROOT, read_json
+from bikesafe.common import ROOT, is_cuda, open_video, read_json, resolve_video
 from bikesafe.geometry import CAR_HEIGHT_M, fit_horizon
 
 DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"
@@ -40,18 +40,22 @@ MIN_PAINT_HITS = 3.0
 
 
 class DepthModel:
-    def __init__(self, device: str) -> None:
+    def __init__(self, device: str, fp16: bool = True) -> None:
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
         self.processor = AutoImageProcessor.from_pretrained(DEPTH_MODEL)
         self.model = AutoModelForDepthEstimation.from_pretrained(DEPTH_MODEL).to(device).eval()
         self.device = device
+        self.dtype = torch.float16 if fp16 and is_cuda(device) else torch.float32
+        if self.dtype == torch.float16:
+            self.model = self.model.half()
 
     @torch.inference_mode()
     def __call__(self, frame_bgr: np.ndarray) -> np.ndarray:
         inputs = self.processor(images=cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), return_tensors="pt",
                                 size={"height": DEPTH_H, "width": DEPTH_W}).to(self.device)
-        return self.model(**inputs).predicted_depth[0].float().cpu().numpy()
+        pixel_values = inputs["pixel_values"].to(self.dtype)
+        return self.model(pixel_values=pixel_values).predicted_depth[0].float().cpu().numpy()
 
 
 def paint_mask(frame: np.ndarray, horizon: float, boxes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -125,7 +129,7 @@ def lines_between(grid: np.ndarray, grid_yellow: np.ndarray, x_obj: float, z_obj
     return int(len(starts)), yellow_runs, nearest
 
 
-def run(perception_dir: Path, analysis_dir: Path, videos: Path, sample_fps: float, device: str) -> Path:
+def run(perception_dir: Path, analysis_dir: Path, videos: Path, sample_fps: float, device: str, fp16: bool = True) -> Path:
     meta = read_json(perception_dir / "meta.json")
     dets = pd.read_parquet(perception_dir / "detections.parquet")
     calib = fit_horizon(dets, meta["width"], meta["height"], meta["processed_fps"], meta["stride"])
@@ -134,12 +138,11 @@ def run(perception_dir: Path, analysis_dir: Path, videos: Path, sample_fps: floa
     all_boxes_by_frame = {int(f): g[["x1", "y1", "x2", "y2"]].to_numpy() for f, g in dets.groupby("frame")}
     stride = meta["stride"]
     step = max(stride, int(round(meta["source_fps"] / sample_fps / stride)) * stride)
-    video = Path(meta["video"])
-    if not video.exists():
-        video = videos / f"{meta['stem']}.mp4"
 
-    depth_model = DepthModel(device)
-    cap = cv2.VideoCapture(str(video))
+    depth_model = DepthModel(device, fp16=fp16)
+    cap = open_video(resolve_video(meta, videos))
+    if meta["start_frame"]:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, meta["start_frame"])
     width, height = meta["width"], meta["height"]
     cx = width / 2
     sx, sy = DEPTH_W / width, DEPTH_H / height
@@ -226,13 +229,14 @@ def main() -> None:
     parser.add_argument("--videos", type=Path, default=ROOT / "videos")
     parser.add_argument("--sample-fps", type=float, default=2.0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--fp32", action="store_true", help="Disable half precision for the depth model on the GPU")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     for path in args.perception_dirs:
         if (args.analysis / path.name / "scene3d.parquet").exists() and not args.overwrite:
             print(f"skip {path.name}: scene3d exists")
             continue
-        run(path, args.analysis, args.videos, args.sample_fps, args.device)
+        run(path, args.analysis, args.videos, args.sample_fps, args.device, fp16=not args.fp32)
 
 
 if __name__ == "__main__":

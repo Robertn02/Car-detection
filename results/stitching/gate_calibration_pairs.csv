@@ -1,0 +1,26 @@
+clip,A,B,gap_s,e,dv,score,verdict
+typology_005_following_280s,2,3,0.5,0.02,0.017,0.028,same vehicle
+typology_005_following_280s,3,8,1.75,0.07,0.005,0.072,same vehicle
+typology_005_following_280s,42,50,0.75,0.07,0.069,0.104,same vehicle
+typology_005_following_280s,50,60,0.75,0.09,0.113,0.147,same vehicle
+typology_005_following_280s,33,42,0.58,0.12,0.149,0.195,same vehicle
+typology_005_following_280s,42,60,1.5,0.15,0.037,0.168,same vehicle
+typology_005_following_280s,33,50,1.33,0.19,0.223,0.302,same vehicle
+typology_005_following_280s,401,412,0.83,0.22,0.668,0.554,different vehicles
+typology_005_following_280s,69,74,0.58,0.24,0.715,0.597,same vehicle
+typology_005_following_280s,149,154,0.75,0.3,0.205,0.402,same vehicle
+typology_005_following_280s,166,173,0.17,0.43,0.511,0.685,same vehicle
+typology_005_following_280s,209,225,0.58,0.47,0.303,0.621,same vehicle
+typology_005_following_280s,124,144,0.42,0.59,2.748,1.964,same vehicle
+typology_005_following_280s,49,85,1.67,0.6,0.223,0.711,same vehicle
+typology_006_bikelane_440s,398,410,0.25,0.02,0.033,0.036,same vehicle
+typology_006_bikelane_440s,304,311,0.33,0.03,0.17,0.115,same vehicle
+typology_006_bikelane_440s,38,50,0.25,0.15,0.115,0.208,same vehicle
+typology_006_bikelane_440s,29,38,0.42,0.16,0.135,0.228,same vehicle
+typology_006_bikelane_440s,521,533,0.5,0.16,0.2,0.26,same vehicle
+typology_006_bikelane_440s,533,545,0.25,0.17,0.476,0.408,same vehicle
+typology_006_bikelane_440s,81,103,1.08,0.32,0.507,0.574,different vehicles
+typology_006_bikelane_440s,57,76,0.42,0.37,1.941,1.341,different vehicles
+typology_006_bikelane_440s,50,70,1.42,0.49,2.048,1.514,different vehicles
+typology_006_bikelane_440s,135,165,0.92,0.52,0.456,0.748,different vehicles
+typology_006_bikelane_440s,57,78,0.67,0.54,2.212,1.646,different vehicles

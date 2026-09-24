@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import ROOT, read_json
+from bikesafe.common import ROOT, open_video, read_json, resolve_video
 from bikesafe.geometry import fit_horizon
 
 SCALE = 0.5
@@ -65,10 +65,7 @@ def run(perception_dir: Path, analysis_dir: Path, videos: Path, max_corners: int
     dets = pd.read_parquet(perception_dir / "detections.parquet")
     calib = fit_horizon(dets, meta["width"], meta["height"], meta["processed_fps"], meta["stride"])
     boxes_by_frame = {int(f): g[["x1", "y1", "x2", "y2"]].to_numpy() for f, g in dets.groupby("frame")}
-    video = Path(meta["video"])
-    if not video.exists():
-        video = videos / f"{meta['stem']}.mp4"
-    cap = cv2.VideoCapture(str(video))
+    cap = open_video(resolve_video(meta, videos))
     start, end, stride = meta["start_frame"], meta["end_frame"], meta["stride"]
     if start:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)

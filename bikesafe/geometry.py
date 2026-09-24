@@ -250,4 +250,61 @@ def detection_kinematics(dets: pd.DataFrame, ego: pd.DataFrame, calib: Calibrati
     static_du = df.g_smooth * df.d_eff * (df.u_c - df.u_foe) + df.yaw_smooth * (1 + x_norm ** 2)
     df["v_lat_mps"] = (du_dt - static_du) * calib.lateral_height_m / df.d_eff
     df["closing_mps"] = df.ego_speed_mps - df.v_along_mps
+    add_flow_motion(df, calib)
     return df
+
+
+def add_flow_motion(df: pd.DataFrame, calib: Calibration) -> None:
+    """Depth-free motion cues from the optical flow stored by the perception pass (added in place).
+
+    * v_lat_flow_mps: the vehicle body's horizontal image motion minus that of the ground just below it. Both sit in
+      the same image column at nearly the same depth, so the rider's translation and yaw cancel exactly, and box height
+      converts the rest to metres (a car is CAR_HEIGHT_M tall) with no depth estimate. It therefore holds for parked
+      cars being passed, where the box-centre trajectory drifts outward. What is left is the vehicle's own motion seen
+      from the rider: v_lat - tan(bearing) * v_along, i.e. lateral motion plus along-road motion when the vehicle is off
+      to the side. The second term could be removed with the measured expansion, but per detection that is too noisy:
+      multiplied by the offset from the heading it swamped the signal on real footage, so the classifier gets the raw
+      quantity together with closing_ratio instead.
+    * closing_ratio: the body's measured expansion rate over the expansion a static object at the same distance would
+      show (g*d). About 1 for a parked car, 0 for a vehicle moving with the rider, 2 for an oncoming one at the
+      rider's speed, whatever the absolute scale. Only defined while the rider moves.
+    """
+    fps = calib.fps
+    whole = ~df.trunc_top & ~df.trunc_bottom
+    lateral_ok = (df.obj_n >= 9) & (df.bg_n >= 6) & whole & (df.box_h >= 12)
+    df["v_lat_flow_mps"] = ((df.obj_dx - df.bg_dx) * fps / df.box_h * CAR_HEIGHT_M).where(lateral_ok)
+    static_rate = df.g_smooth * df.d_eff  # 1/s
+    moving = df.ego_moving.fillna(False).astype(bool) & (static_rate > 0)
+    expansion = (df.obj_scale * fps).where(df.obj_n >= 36)
+    df["closing_ratio"] = (expansion / static_rate).where(moving & df.geom_ok).clip(-3, 5)
+
+
+def flow_grid_reference(kin: pd.DataFrame, grid_frames: np.ndarray, grid: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Background flow (vehicles masked) in the flow-grid cells beside each box on the rider's side, px per step.
+
+    Those cells hold road and kerb at roughly the vehicle's distance, so a parked car moves about like them while a car
+    travelling with the rider barely moves at all. This works for boxes cut off by the frame edge, which have no
+    visible ground below them.
+    """
+    gh, gw = grid.shape[1:3]
+    cell_w, cell_h = width / gw, height / gh
+    index = {int(f): i for i, f in enumerate(grid_frames)}
+    out = np.full((len(kin), 2), np.nan)
+    cols = kin[["frame", "x1", "y1", "x2", "y2", "u_foe"]].to_numpy(float)
+    for j, (frame, x1, y1, x2, y2, u_foe) in enumerate(cols):
+        i = index.get(int(frame))
+        if i is None:
+            continue
+        rows = np.arange(max(0, int(y1 // cell_h)), min(gh, int(y2 // cell_h) + 1))
+        if (x1 + x2) / 2 > u_foe:  # right of the heading: look between the vehicle and the rider's path
+            c0, c1 = x1 - (x2 - x1), x1
+        else:
+            c0, c1 = x2, x2 + (x2 - x1)
+        grid_cols = np.arange(max(0, int(c0 // cell_w)), min(gw, int(c1 // cell_w) + 1))
+        if not len(rows) or not len(grid_cols):
+            continue
+        cells = grid[i][np.ix_(rows, grid_cols)].reshape(-1, 2)
+        cells = cells[np.isfinite(cells).all(axis=1)]
+        if len(cells):
+            out[j] = np.median(cells, axis=0)
+    return out

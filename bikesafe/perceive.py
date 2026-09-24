@@ -27,7 +27,8 @@ import torch
 import yaml
 from ultralytics import YOLO
 
-from bikesafe.common import ROOT, VEHICLE_CLASSES, list_videos, probe_video, read_json, write_json
+from bikesafe.common import (ROOT, VEHICLE_CLASSES, fp16_kwargs, is_cuda, list_videos, open_video, probe_video, read_json,
+                             write_json)
 
 FLOW_W, FLOW_H = 480, 270
 GRID_W, GRID_H = 16, 9
@@ -39,7 +40,7 @@ MAX_CROPS_PER_SECOND = 6
 
 def frame_reader(path: Path, stride: int, start: int, end: int, out: queue.Queue) -> None:
     """Decode, downscale, and compute dense flow off the main thread (OpenCV releases the GIL)."""
-    cap = cv2.VideoCapture(str(path))
+    cap = open_video(path)
     if start:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
@@ -88,20 +89,23 @@ def scaled_tracker_config(base: Path, fps: float, buffer_s: float, out_dir: Path
 
 
 class ClipEncoder:
-    def __init__(self, model_name: str, pretrained: str, device: str) -> None:
+    def __init__(self, model_name: str, pretrained: str, device: str, fp16: bool = True) -> None:
         import open_clip
 
         self.model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
         self.model = self.model.eval().to(device)
         self.device = device
         self.mean, self.std = CLIP_MEAN.to(device), CLIP_STD.to(device)
+        # embeddings are stored as float16 anyway, so autocast costs nothing in what is kept
+        self.autocast = fp16 and is_cuda(device)
 
     @torch.inference_mode()
     def encode(self, images_bgr: list[np.ndarray]) -> np.ndarray:
         batch = np.stack([cv2.cvtColor(cv2.resize(im, (224, 224), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2RGB) for im in images_bgr])
         x = torch.from_numpy(batch).to(self.device).permute(0, 3, 1, 2).float().div_(255)
-        feats = self.model.encode_image((x - self.mean) / self.std)
-        return torch.nn.functional.normalize(feats, dim=-1).cpu().numpy().astype(np.float16)
+        with torch.autocast("cuda", dtype=torch.float16, enabled=self.autocast):
+            feats = self.model.encode_image((x - self.mean) / self.std)
+        return torch.nn.functional.normalize(feats.float(), dim=-1).cpu().numpy().astype(np.float16)
 
 
 def detection_flow(flow: np.ndarray, mask: np.ndarray, box: np.ndarray, sx: float, sy: float) -> tuple[float, ...]:
@@ -170,6 +174,7 @@ def process_video(path: Path, args: argparse.Namespace, clip: ClipEncoder | None
     tracker_cfg = scaled_tracker_config(args.tracker, proc_fps, args.track_buffer_s, out_dir)
     model = YOLO(str(args.model))
     classes = list(VEHICLE_CLASSES)
+    precision = {} if args.fp32 else fp16_kwargs(args.device)
 
     frames_q: queue.Queue = queue.Queue(maxsize=16)
     reader = threading.Thread(target=frame_reader, args=(path, stride, start, end, frames_q), daemon=True)
@@ -195,7 +200,7 @@ def process_video(path: Path, args: argparse.Namespace, clip: ClipEncoder | None
         t = idx / info.fps
         result = model.track(
             frame, persist=True, tracker=str(tracker_cfg), imgsz=args.imgsz, conf=args.conf,
-            classes=classes, device=args.device, verbose=False,
+            classes=classes, device=args.device, verbose=False, **precision,
         )[0]
         assert model.predictor is not None
         tracker = model.predictor.trackers[0]
@@ -289,7 +294,9 @@ def process_video(path: Path, args: argparse.Namespace, clip: ClipEncoder | None
         "clip": None if clip is None else f"{args.clip_model}/{args.clip_pretrained}",
         "flow": {"size": [FLOW_W, FLOW_H], "grid": [GRID_W, GRID_H], "preset": "DIS medium"},
         "gmc": "dense-flow RANSAC similarity" if args.gmc == "dense" else "BoT-SORT sparseOptFlow",
-        "elapsed_s": round(elapsed, 1), "complete": args.start_s == 0 and args.end_s is None,
+        "precision": "fp16" if precision else "fp32",
+        "elapsed_s": round(elapsed, 1), "processed_fps_achieved": round(len(frame_idx) / max(elapsed, 1e-6), 2),
+        "complete": args.start_s == 0 and args.end_s is None,
     })
     print(f"{info.stem}: {len(frame_idx)} frames, {len(dets)} detections in {elapsed/60:.1f} min", flush=True)
 
@@ -307,6 +314,8 @@ def main() -> None:
     parser.add_argument("--gmc", choices=["dense", "sparse"], default="dense",
                         help="dense reuses the DIS flow (fast); sparse is BoT-SORT's own GMC (slightly better IDF1 at full frame rate)")
     parser.add_argument("--device", default="0" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--fp32", action="store_true",
+                        help="Disable half precision on the GPU (FP16 is the default on CUDA: ~1.5-2x faster detector)")
     parser.add_argument("--clip-model", default="ViT-B-32")
     parser.add_argument("--clip-pretrained", default="laion2b_s34b_b79k")
     parser.add_argument("--clip-every-s", type=float, default=1.0)
@@ -319,9 +328,19 @@ def main() -> None:
     paths: list[Path] = []
     for item in args.videos:
         paths.extend(list_videos(item) if item.is_dir() else [item])
-    device = f"cuda:{args.device}" if args.device.isdigit() else args.device
-    clip = None if args.no_clip else ClipEncoder(args.clip_model, args.clip_pretrained, device)
+    # skip finished videos before loading any model, so re-running the corpus costs nothing for them
+    pending = []
     for path in paths:
+        meta_path = args.out / path.stem / "meta.json"
+        if meta_path.exists() and read_json(meta_path).get("complete") and not args.overwrite:
+            print(f"skip {path.stem}: already complete")
+        else:
+            pending.append(path)
+    if not pending:
+        return
+    device = f"cuda:{args.device}" if args.device.isdigit() else args.device
+    clip = None if args.no_clip else ClipEncoder(args.clip_model, args.clip_pretrained, device, fp16=not args.fp32)
+    for path in pending:
         process_video(path, args, clip)
 
 

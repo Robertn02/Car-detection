@@ -1,0 +1,4 @@
+clip,tracks_checked,tracks_with_plate_found,tracks_with_two_agreeing_reads,vehicles_with_plate_key,vehicles_with_two_plates,same_plate_joined_pairs,same_plate_split_pairs,same_plate_split_within_gap,vehicles_seen_again_later
+typology_006_bikelane_440s,156,74,2,2,0,0,0,0,0
+typology_005_following_280s,97,51,6,1,0,15,0,0,0
+typology_006_parked_700s,116,38,0,0,0,0,0,0,0
