@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +12,8 @@ from pathlib import Path
 import cv2
 
 ROOT = Path(__file__).resolve().parents[1]
+# Set by `bikesafe.run --hw-decode` (or by hand) so every stage decodes with the GPU's video engine when it can.
+HW_DECODE_ENV = "BIKESAFE_HW_DECODE"
 VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 # Fine-grained relation of a vehicle to the rider, and the professor's four reporting groups.
@@ -59,6 +62,43 @@ class VideoInfo:
         if not match:
             return None
         return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").isoformat()
+
+
+def open_video(path: Path, hw: bool | None = None) -> cv2.VideoCapture:
+    """VideoCapture with FFmpeg hardware decoding (NVDEC / D3D11 / VAAPI) when requested and available.
+
+    Every stage decodes the whole ride once, so on high-bitrate 360 exports decoding, not the models, can dominate.
+    Falls back to software decoding silently; frames are identical either way.
+    """
+    if hw is None:
+        hw = os.environ.get(HW_DECODE_ENV) == "1"
+    if hw:
+        cap = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG,
+                               [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY])
+        if cap.isOpened():
+            return cap
+    return cv2.VideoCapture(str(path))
+
+
+def is_cuda(device: str) -> bool:
+    device = str(device)
+    return device.startswith("cuda") or device.isdigit()
+
+
+def fp16_kwargs(device: str) -> dict:
+    """Half-precision inference arguments for ultralytics predict/track on CUDA, in the form the installed version
+    accepts (newer releases replaced `half=True` with `quantize=16`). Empty on CPU."""
+    if not is_cuda(device):
+        return {}
+    from ultralytics.cfg import DEFAULT_CFG_DICT
+
+    return {"quantize": 16} if "quantize" in DEFAULT_CFG_DICT else {"half": True}
+
+
+def resolve_video(meta: dict, videos: Path) -> Path:
+    """The ride video recorded in a perception meta.json, or the same file name in `videos` if it has moved."""
+    video = Path(meta["video"])
+    return video if video.exists() else videos / f"{meta['stem']}.mp4"
 
 
 def probe_video(path: Path) -> VideoInfo:

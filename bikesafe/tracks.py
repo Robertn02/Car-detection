@@ -12,11 +12,15 @@ import numpy as np
 import pandas as pd
 
 from bikesafe.common import ROOT, SCENES, read_json, write_json
-from bikesafe.geometry import DEFAULT_HFOV_DEG, detection_kinematics, ego_from_tracking, ego_motion, fit_horizon
+from bikesafe.geometry import (DEFAULT_HFOV_DEG, detection_kinematics, ego_from_tracking, ego_motion, fit_horizon,
+                               flow_grid_reference)
+from bikesafe.infrastructure import REF_Z, parse_lines, per_second_summary
 from bikesafe.scene import crop_scores, scene_probabilities
 
 STATIC_MPS = 1.5
 CROSS_MPS = 1.5
+# 3: depth-free flow motion cues and lane-paint relations; bikesafe.run recomputes tracks written by older versions
+FEATURES_VERSION = 3
 
 
 def q(series: pd.Series, p: float) -> float:
@@ -110,7 +114,86 @@ def aggregate_track(t: pd.DataFrame, width: int, height: int) -> dict:
         "geom_valid_frac": float(t.geom_ok.mean()),
         "abs_x_at_min_z": float(abs(t.x_center_m.iloc[int(np.argmin(t.z_m.to_numpy()))])),
         **world_trajectory(t),
+        **flow_motion_summary(t),
     }
+
+
+def flow_motion_summary(t: pd.DataFrame) -> dict:
+    """Per-track summary of the depth-free flow cues (bikesafe.geometry.add_flow_motion and the flow-grid projection).
+
+    closing_ratio ~1 parked, ~0 moving with the rider, ~2 oncoming; v_lat_flow is lateral speed over the ground;
+    grid_proj is the body's image motion projected on the background beside it (~1 static, ~0 moving with the rider,
+    negative when overtaking the rider).
+    """
+    out = {}
+    lat = t.v_lat_flow_mps if "v_lat_flow_mps" in t else pd.Series(dtype=float)
+    side = np.sign(t.x_center_m).replace(0, 1)
+    lat_ok = lat.dropna()
+    out["lat_flow_n"] = int(len(lat_ok))
+    out["v_lat_flow_absmed"] = q(lat.abs(), 0.5)
+    out["v_lat_flow_absp90"] = q(lat.abs(), 0.9)
+    out["v_lat_flow_out_med"] = q(lat * side, 0.5)
+    out["frac_lat_flow_moving"] = float((lat_ok.abs() > CROSS_MPS).mean()) if len(lat_ok) else float("nan")
+    closing = t.closing_ratio if "closing_ratio" in t else pd.Series(dtype=float)
+    out["closing_n"] = int(closing.notna().sum())
+    out["closing_ratio_med"] = q(closing, 0.5)
+    out["closing_ratio_p10"] = q(closing, 0.1)
+    out["closing_ratio_p90"] = q(closing, 0.9)
+    along = t.v_along_flow_mps if "v_along_flow_mps" in t else pd.Series(dtype=float)
+    out["v_along_flow_med"] = q(along, 0.5)
+    out["v_along_flow_ratio"] = float(q(along, 0.5) / max(q(t.ego_speed_mps, 0.5), 0.5))
+    proj = t.grid_proj if "grid_proj" in t else pd.Series(dtype=float)
+    out["grid_n"] = int(proj.notna().sum())
+    out["grid_proj_med"] = q(proj, 0.5)
+    out["grid_proj_p10"] = q(proj, 0.1)
+    return out
+
+
+def lane_relation_features(kin: pd.DataFrame, lanes: pd.DataFrame, bike_lane: pd.Series | None) -> pd.DataFrame:
+    """Where each vehicle sits relative to the painted lines found by bikesafe.infrastructure.
+
+    For every detection on a sampled frame, the lines are evaluated at the vehicle's distance (they were fitted
+    2.5-14 m ahead, so only vehicles within 16 m count) and the lines between the rider's path and the vehicle's near
+    side are counted. Also: the share of the track during which the rider was in a painted bike lane, which turns
+    "a car in front, in my path" into an intrusion and "a car just left of me" into traffic in the next lane.
+    """
+    if lanes.empty:
+        return pd.DataFrame()
+    parsed = {}
+    for row in lanes.itertuples():
+        items = parse_lines(row.lines_json)
+        parsed[int(row.frame)] = tuple(np.array(col, float) for col in zip(*items)) if items else ()
+    sampled = kin[kin.frame.isin(parsed) & kin.x_inner_m.notna() & kin.z_m.between(2.0, 16.0)]
+    rows = []
+    for det in sampled[["track_id", "frame", "x_inner_m", "z_m"]].itertuples(index=False):
+        if not parsed[int(det.frame)]:
+            rows.append((det.track_id, 0, 0, 0, np.nan))
+            continue
+        xs, solid, yellow, shear = parsed[int(det.frame)]
+        solid = solid.astype(bool)
+        at_vehicle = xs + shear * (det.z_m - REF_Z)
+        lo, hi = sorted((0.0, det.x_inner_m))
+        between = (at_vehicle > lo) & (at_vehicle < hi)
+        left_edge = at_vehicle[at_vehicle <= -0.3].max() if (at_vehicle <= -0.3).any() else -np.inf
+        right_edge = at_vehicle[at_vehicle >= 0.3].min() if (at_vehicle >= 0.3).any() else np.inf
+        in_lane = int(left_edge < det.x_inner_m < right_edge)
+        rows.append((det.track_id, int(between.sum()), int((between & solid).sum()), int((between & (yellow >= 0.5)).sum()),
+                     float(in_lane)))
+    per_det = pd.DataFrame(rows, columns=["track_id", "n_between", "n_solid_between", "n_yellow_between", "in_rider_lane"])
+    feats = per_det.groupby("track_id").agg(
+        paint_lines_between_med=("n_between", "median"), paint_solid_between_max=("n_solid_between", "max"),
+        paint_yellow_between_max=("n_yellow_between", "max"), in_rider_lane_frac=("in_rider_lane", "mean"),
+        n_lane_samples=("n_between", "size")).reset_index()
+    if bike_lane is not None and len(bike_lane):
+        span = kin.groupby("track_id").time_s.agg(["min", "max"])
+        values = bike_lane.astype(float)
+        frac = {int(tid): float(values.loc[int(a): int(b)].mean()) for tid, (a, b) in span.iterrows()}
+        feats["rider_bike_lane_frac"] = feats.track_id.map(frac)
+        missing = pd.DataFrame({"track_id": [tid for tid in frac if tid not in set(feats.track_id)]})
+        if len(missing):
+            missing["rider_bike_lane_frac"] = missing.track_id.map(frac)
+            feats = pd.concat([feats, missing], ignore_index=True)
+    return feats
 
 
 def feature(row: pd.Series, key: str) -> float:
@@ -283,6 +366,14 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
         ego = ego_motion(flow["frame"], flow["grid"], calib)
     ego["time_s"] = ego.frame / meta["source_fps"]
     kin = detection_kinematics(dets, ego, calib)
+    flow_path = perception_dir / "flow_grid.npz"
+    if flow_path.exists():
+        flow = np.load(flow_path)
+        ref = flow_grid_reference(kin, flow["frame"], flow["grid"], calib.width, calib.height)
+        body = kin[["obj_dx", "obj_dy"]].to_numpy(float)
+        norm2 = (ref ** 2).sum(axis=1)
+        # only where the background visibly moves (> 2 px per step), otherwise the ratio is noise
+        kin["grid_proj"] = np.where(norm2 > 4.0, (body * ref).sum(axis=1) / np.maximum(norm2, 1e-6), np.nan)
 
     clip_path = perception_dir / "clip.npz"
     scene = scene_probabilities(clip_path, meta["source_fps"], probe=scene_probe) if clip_path.exists() else None
@@ -298,6 +389,16 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
         depth_features = scene3d_features(pd.read_parquet(scene3d_path), ego, meta["source_fps"], calib.focal_px)
         if len(depth_features):
             tracks = tracks.merge(depth_features, on="track_id", how="left")
+    lanes_path = out_dir / "lanes.parquet"
+    if lanes_path.exists() and len(tracks):
+        lanes = pd.read_parquet(lanes_path)
+        objects_path = out_dir / "infrastructure.parquet"
+        objects = pd.read_parquet(objects_path) if objects_path.exists() else pd.DataFrame()
+        n_seconds = int(max(ego.time_s.max(), 0)) + 1
+        bike_lane = per_second_summary(lanes, objects, n_seconds).in_bike_lane
+        lane_features = lane_relation_features(kin, lanes, bike_lane)
+        if len(lane_features):
+            tracks = tracks.merge(lane_features, on="track_id", how="left")
     if scene is not None and len(tracks):
         mid = (tracks.t_start + tracks.t_end) / 2
         pos = np.clip(np.searchsorted(scene.time_s.to_numpy(), mid.to_numpy()), 0, len(scene) - 1)
@@ -314,7 +415,8 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
     if scene is not None:
         scene.to_parquet(out_dir / "scene.parquet", index=False)
     write_json(out_dir / "calibration.json", {**calib.as_dict(), "start_local": meta.get("start_local"),
-                                              "source_fps": meta["source_fps"]})
+                                              "source_fps": meta["source_fps"], "features_version": FEATURES_VERSION,
+                                              "lane_features": lanes_path.exists()})
     return tracks
 
 

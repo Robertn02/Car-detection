@@ -1,7 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu126
 torch==2.14.0+cu126
 torchvision==0.29.0+cu126
-ultralytics==8.4.155
+ultralytics==8.4.161  # YOLOE-26 infrastructure pass validated with this version
 opencv-python==5.0.0.93
 numpy==2.5.2
 pandas==3.0.5

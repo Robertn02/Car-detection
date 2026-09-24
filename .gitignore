@@ -12,3 +12,7 @@ work/
 
 # Original source videos exceed GitHub's standard per-file size limit
 /videos/
+
+# Detector weights and the YOLOE text encoder that ultralytics downloads on first use (large; fetched automatically)
+models/yoloe-*.pt
+mobileclip*.ts

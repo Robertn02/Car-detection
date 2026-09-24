@@ -1,6 +1,31 @@
 # Vehicle Detection and Tracking - Submission Package
 
-## Current milestone: vehicle typology relative to the rider
+## Current milestone: bike lanes, traffic signs and signals, sharper motion cues, faster runs
+
+Response to *"accuracy is still not acceptable, and there is no bike lane or traffic sign detection"*.
+
+1. Read [reports/INFRASTRUCTURE_AND_ACCURACY_REPORT.md](reports/INFRASTRUCTURE_AND_ACCURACY_REPORT.md): what was
+   added, how it was checked on real footage, and exactly what still has to be measured on the full corpus.
+2. New stage `bikesafe.infrastructure`: painted bike lanes (lane lines and bicycle stencils in a bird's-eye view of
+   the road), traffic signals with their state (red / yellow / green), stop signs and other traffic signs. Its
+   per-second output joins the timeline, fixes the riding context, and feeds new events (`stop_sign`,
+   `red_light_wait`).
+3. New depth-free motion features from the optical flow the perception pass already stored, aimed at the most
+   frequent error (moving vehicles called parked), plus each vehicle's position relative to the painted lines.
+4. Faster: FP16 on the GPU, optional hardware video decoding, CPU stages in parallel across rides, and a per-stage
+   timing summary.
+
+On your GPU machine, one command reuses everything already computed, runs only what is new, and retrains:
+
+```bash
+python -m bikesafe.run videos --out-root work --render-minutes 1 --hw-decode   # new stages only; prints stage timings
+python -m bikesafe.train                                                       # retrain + feature ablation
+python -m bikesafe.exposure --analysis work/analysis --perception work/perception   # re-apply the new model
+```
+
+`results/typology/feature_ablation.csv` then shows what the new features are worth on the 378 labelled tracks.
+
+## Previous milestone: vehicle typology relative to the rider
 
 Answering the feedback *"would you be able to distinguish cars in my lane, cars sharing the road, parked cars, and cars
 on side roads or across the median?"* — yes, and it now runs over all six rides (112 minutes).

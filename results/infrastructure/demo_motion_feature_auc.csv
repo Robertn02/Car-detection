@@ -1,0 +1,8 @@
+feature,version,auc_parked_vs_same_direction_rider_moving,n_same_direction_rider_moving,auc_parked_vs_crossing,n_crossing,auc_parked_vs_oncoming,n_oncoming
+world_speed,v2,0.924,59,0.947,62,0.865,54
+v_along_med,v2,0.944,59,0.532,62,0.78,54
+v_lat_absmed,v2,0.536,59,0.925,62,0.72,54
+closing_ratio_med,v3 (new),0.969,59,0.52,54,0.645,54
+v_lat_flow_absmed,v3 (new),0.782,59,0.872,62,0.86,54
+grid_proj_med,v3 (new),0.8,59,0.677,62,0.73,54
+v_along_flow_med,v3 (new),0.951,59,0.595,62,0.62,54
