@@ -1,0 +1,6 @@
+,ego_lane,adjacent_same,oncoming,parked,cross_side
+ego_lane,4,2,0,3,2
+adjacent_same,3,9,1,9,3
+oncoming,0,1,6,12,4
+parked,1,4,10,139,14
+cross_side,2,2,3,18,43

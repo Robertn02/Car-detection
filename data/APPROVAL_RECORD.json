@@ -1,0 +1,21 @@
+{
+  "approved_at_utc": "2026-09-10T12:11:49.468096+00:00",
+  "approval_source": "User stated: human review approved",
+  "detection": {
+    "items": 120,
+    "train": 96,
+    "validation": 24
+  },
+  "tracking": {
+    "rows": 4512,
+    "frames": 300,
+    "track_ids": 89
+  },
+  "triplets": {
+    "triplets": 350,
+    "train": 285,
+    "validation": 65,
+    "anchor_track_ids": 70
+  },
+  "caveat": "Approval freezes the reviewed references. Tracking metrics are not computed against an identical copied prediction file."
+}

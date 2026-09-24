@@ -1,0 +1,18 @@
+{
+  "source": "outputs\\detections_FULLVIDEO_yolo11n_1280.csv",
+  "classes_present": [
+    "car"
+  ],
+  "total_frames": 53955,
+  "total_detections": 387267,
+  "frames_with_detection": 52374,
+  "empty_frames": 1581,
+  "percent_frames_with_detection": 97.07,
+  "mean_detections_all_frames": 7.1776,
+  "median_detections_all_frames": 7.0,
+  "minimum_detections": 0,
+  "maximum_detections": 28,
+  "mean_confidence": 0.5692,
+  "fps": 29.97,
+  "duration_minutes": 30.005
+}

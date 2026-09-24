@@ -1,0 +1,13 @@
+# BoT-SORT baseline with camera-motion compensation and appearance ReID enabled.
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.10
+new_track_thresh: 0.25
+track_buffer: 30
+match_thresh: 0.80
+fuse_score: true
+gmc_method: sparseOptFlow
+proximity_thresh: 0.50
+appearance_thresh: 0.80
+with_reid: true
+model: auto

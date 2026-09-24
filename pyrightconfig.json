@@ -1,0 +1,11 @@
+{
+  "include": ["bikesafe"],
+  "venvPath": ".",
+  "venv": "venv",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false,
+  "reportAttributeAccessIssue": "warning",
+  "reportArgumentType": "warning",
+  "reportCallIssue": "warning",
+  "reportOperatorIssue": "warning"
+}

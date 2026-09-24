@@ -1,0 +1,146 @@
+{
+  "n_track_labels": 378,
+  "label_counts": {
+    "parked": 201,
+    "cross_side": 97,
+    "adjacent_same": 38,
+    "oncoming": 26,
+    "ego_lane": 16
+  },
+  "videos": [
+    "VID_20260209_090112_00_001",
+    "VID_20260209_183334_00_002",
+    "VID_20260223_090217_00_003",
+    "VID_20260223_183551_00_004",
+    "VID_20260224_091119_00_005",
+    "VID_20260224_162848_00_006"
+  ],
+  "relation": {
+    "rules": {
+      "accuracy": 0.36507936507936506,
+      "macro_f1": 0.32879188891114797,
+      "group_accuracy": 0.3941798941798942,
+      "group_macro_f1": 0.36889139165709833,
+      "per_class_f1": {
+        "ego_lane": 0.39,
+        "adjacent_same": 0.207,
+        "oncoming": 0.291,
+        "parked": 0.531,
+        "cross_side": 0.225
+      }
+    },
+    "decision_tree": {
+      "accuracy": 0.43915343915343913,
+      "macro_f1": 0.3696757261133489,
+      "group_accuracy": 0.4656084656084656,
+      "group_macro_f1": 0.41929280649887185,
+      "per_class_f1": {
+        "ego_lane": 0.226,
+        "adjacent_same": 0.252,
+        "oncoming": 0.273,
+        "parked": 0.518,
+        "cross_side": 0.579
+      }
+    },
+    "gradient_boosting": {
+      "accuracy": 0.6216931216931217,
+      "macro_f1": 0.4358123378861258,
+      "group_accuracy": 0.6349206349206349,
+      "group_macro_f1": 0.496053076402975,
+      "per_class_f1": {
+        "ego_lane": 0.25,
+        "adjacent_same": 0.319,
+        "oncoming": 0.255,
+        "parked": 0.755,
+        "cross_side": 0.6
+      }
+    }
+  },
+  "near_z_m": 15.0,
+  "n_near_labels": 295,
+  "relation_within_near_z": {
+    "rules": {
+      "accuracy": 0.4101694915254237,
+      "macro_f1": 0.3428524356147574,
+      "group_accuracy": 0.43050847457627117,
+      "group_macro_f1": 0.3788816098900164,
+      "per_class_f1": {
+        "ego_lane": 0.387,
+        "adjacent_same": 0.191,
+        "oncoming": 0.333,
+        "parked": 0.595,
+        "cross_side": 0.208
+      }
+    },
+    "decision_tree": {
+      "accuracy": 0.48135593220338985,
+      "macro_f1": 0.38168052379884587,
+      "group_accuracy": 0.49830508474576274,
+      "group_macro_f1": 0.4089188365667391,
+      "per_class_f1": {
+        "ego_lane": 0.078,
+        "adjacent_same": 0.385,
+        "oncoming": 0.308,
+        "parked": 0.602,
+        "cross_side": 0.535
+      }
+    },
+    "gradient_boosting": {
+      "accuracy": 0.6576271186440678,
+      "macro_f1": 0.4153278342576111,
+      "group_accuracy": 0.6711864406779661,
+      "group_macro_f1": 0.47693361213324065,
+      "per_class_f1": {
+        "ego_lane": 0.125,
+        "adjacent_same": 0.195,
+        "oncoming": 0.333,
+        "parked": 0.791,
+        "cross_side": 0.632
+      }
+    }
+  },
+  "selected_model": "gradient_boosting",
+  "accuracy_by_closest_approach": {
+    "(0, 5]": {
+      "n": 142,
+      "accuracy": 0.782
+    },
+    "(5, 10]": {
+      "n": 89,
+      "accuracy": 0.618
+    },
+    "(10, 15]": {
+      "n": 64,
+      "accuracy": 0.484
+    },
+    "(15, 25]": {
+      "n": 61,
+      "accuracy": 0.475
+    },
+    "(25, 1000]": {
+      "n": 22,
+      "accuracy": 0.409
+    }
+  },
+  "scene": {
+    "zero_shot": {
+      "accuracy": 0.8697068403908795,
+      "macro_f1": 0.7097813238770686,
+      "per_class_f1": {
+        "separated_path": 0.809,
+        "bike_lane": 0.4,
+        "shared_road": 0.921
+      }
+    },
+    "linear_probe": {
+      "accuracy": 0.8859934853420195,
+      "macro_f1": 0.7539123771208258,
+      "C": 0.01,
+      "per_class_f1": {
+        "separated_path": 0.845,
+        "bike_lane": 0.488,
+        "shared_road": 0.929
+      }
+    }
+  }
+}

@@ -1,0 +1,55 @@
+|--- v_along_ratio <= 0.36
+|   |--- ego_speed_med <= 0.13
+|   |   |--- v_along_med <= -5.52
+|   |   |   |--- class: oncoming
+|   |   |--- v_along_med >  -5.52
+|   |   |   |--- p_separated_path <= 0.05
+|   |   |   |   |--- view_rear <= 0.00
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |   |--- view_rear >  0.00
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |--- p_separated_path >  0.05
+|   |   |   |   |--- class: cross_side
+|   |--- ego_speed_med >  0.13
+|   |   |--- depth_x_at_min_z <= 1.67
+|   |   |   |--- depth_x_at_min_z <= -8.27
+|   |   |   |   |--- x_center_med <= -23.99
+|   |   |   |   |   |--- class: adjacent_same
+|   |   |   |   |--- x_center_med >  -23.99
+|   |   |   |   |   |--- class: oncoming
+|   |   |   |--- depth_x_at_min_z >  -8.27
+|   |   |   |   |--- view_side <= 0.37
+|   |   |   |   |   |--- class: adjacent_same
+|   |   |   |   |--- view_side >  0.37
+|   |   |   |   |   |--- class: parked
+|   |   |--- depth_x_at_min_z >  1.67
+|   |   |   |--- depth_x_at_min_z <= 11.74
+|   |   |   |   |--- depth_z_min <= 13.76
+|   |   |   |   |   |--- class: parked
+|   |   |   |   |--- depth_z_min >  13.76
+|   |   |   |   |   |--- class: parked
+|   |   |   |--- depth_x_at_min_z >  11.74
+|   |   |   |   |--- class: cross_side
+|--- v_along_ratio >  0.36
+|   |--- frac_close_pass <= 0.97
+|   |   |--- depth_z_min <= 2.14
+|   |   |   |--- v_along_med <= 4.82
+|   |   |   |   |--- class: adjacent_same
+|   |   |   |--- v_along_med >  4.82
+|   |   |   |   |--- class: adjacent_same
+|   |   |--- depth_z_min >  2.14
+|   |   |   |--- world_speed_ratio <= 1.51
+|   |   |   |   |--- world_speed_ratio <= 1.05
+|   |   |   |   |   |--- class: parked
+|   |   |   |   |--- world_speed_ratio >  1.05
+|   |   |   |   |   |--- class: ego_lane
+|   |   |   |--- world_speed_ratio >  1.51
+|   |   |   |   |--- v_lat_ratio <= 2.28
+|   |   |   |   |   |--- class: adjacent_same
+|   |   |   |   |--- v_lat_ratio >  2.28
+|   |   |   |   |   |--- class: cross_side
+|   |--- frac_close_pass >  0.97
+|   |   |--- view_front <= 0.16
+|   |   |   |--- class: ego_lane
+|   |   |--- view_front >  0.16
+|   |   |   |--- class: oncoming
