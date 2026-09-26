@@ -140,7 +140,7 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
 ```bash
 python -m venv venv
 venv\Scripts\activate
-pip install -r requirements-typology.txt
+pip install -r requirements.txt
 python -m bikesafe.run D:\rides --out-root D:\rides_out --render-minutes 1 --hw-decode
 python -m bikesafe.train --analysis D:\rides_out\analysis --perception D:\rides_out\perception
 python -m bikesafe.exposure --analysis D:\rides_out\analysis --perception D:\rides_out\perception --out results\corpus

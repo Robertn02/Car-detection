@@ -75,7 +75,7 @@ VOCABULARY: dict[str, tuple[str, str]] = {
 }
 MIN_CONF = {"light": 0.25, "sign": 0.25, "marking": 0.08}
 # stop signs are confirmed by a COCO-trained detector (class 11), which the repository already ships
-STOP_VERIFIER, COCO_STOP_SIGN, STOP_CONFIRM_CONF = str(ROOT / "weights" / "yolo11m.pt"), 11, 0.4
+STOP_VERIFIER, COCO_STOP_SIGN, STOP_CONFIRM_CONF = str(ROOT / "models" / "yolo11m.pt"), 11, 0.4
 
 # Bird's-eye view: X to the right of the rider's heading, Z ahead, flat road. Lines are judged 2.5-14 m ahead.
 BEV_X, BEV_Z, BEV_RES = (-4.5, 4.5), (2.5, 18.0), 0.02

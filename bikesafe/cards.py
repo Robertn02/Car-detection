@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import RELATIONS, ROOT, read_json
+from bikesafe.common import ROOT, read_json
 
 TILE_W, TILE_H = 640, 360
 
