@@ -61,3 +61,24 @@ def test_identity_audit_counts_agreement_misses_and_conflicts():
 def test_each_vehicle_gets_the_plate_most_of_its_reads_agree_on():
     plates = pd.DataFrame({"track_id": [1, 2, 3], "plate_text": ["P1", "P1", "P9"], "agreeing_reads": [2, 3, 2]})
     assert vehicle_plates(plates, {1: 10, 2: 10, 3: 10}).to_dict() == {10: "P1"}
+
+
+def test_a_plate_found_on_a_detected_frame_moves_with_its_vehicle_in_between():
+    from bikesafe.plates import PlateAnnotator
+
+    class Finder:
+        def find(self, image, boxes):
+            return [(0, np.array([140.0, 160.0, 180.0, 172.0]), 0.9)]
+
+    class Reader:
+        finder = Finder()
+
+        def read_crop(self, image, plate):
+            return "ABC123", 0.9
+
+    annotator = PlateAnnotator({}, reader=Reader())  # type: ignore[arg-type]
+    annotator(np.zeros((300, 400, 3), np.uint8), np.array([[100.0, 100.0, 220.0, 180.0]]), [7])
+    moved = np.zeros((300, 400, 3), np.uint8)
+    annotator(moved, np.array([[110.0, 100.0, 230.0, 180.0]]), [7], find=False)  # the vehicle 10 px to the right
+    assert (moved[160, 150:190] == (0, 255, 255)).all()  # the plate's top edge, 10 px to the right as well
+    assert annotator.plates_drawn == 2

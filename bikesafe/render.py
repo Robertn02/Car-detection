@@ -11,7 +11,9 @@ line's position are interpolated from the samples before and after, and a lane l
 on two of three consecutive samples, no further ahead than its paint was seen, not across a junction's crosswalk, and
 behind the vehicles - so the overlay does not flicker or sweep across the picture when one sample is off.
 
-The clip is written as H.264 when imageio-ffmpeg is installed (bikesafe.common.VideoOut), else as MPEG-4.
+The clip has every frame of the video at its full size (--width to shrink it). Vehicles are detected on every second
+frame (bikesafe.perceive --target-fps), so their boxes are interpolated on the frames in between. It is written as
+H.264 when imageio-ffmpeg is installed (bikesafe.common.VideoOut), else as MPEG-4.
 
     python -m bikesafe.render VID_20260224_162848_00_006 --start-s 300 --duration-s 60
 """
@@ -178,6 +180,7 @@ def draw_lane_lines(image: np.ndarray, lines: list[dict], u_foe: float, calib: d
                     vehicle_boxes: np.ndarray) -> None:
     """Lines no further ahead than their paint was seen, hidden behind vehicles."""
     layer = np.zeros_like(image)
+    drawn = np.zeros(image.shape[:2], np.uint8)
     for line in lines:
         colour = LANE_COLOURS_BGR["yellow"] if line["yellow"] else LANE_COLOURS_BGR["solid" if line["solid"] else "broken"]
         if in_bike_lane and -2.4 <= line["x"] <= -0.3 and not line["yellow"]:
@@ -190,10 +193,10 @@ def draw_lane_lines(image: np.ndarray, lines: list[dict], u_foe: float, calib: d
             continue
         pts = project_line(line["x"], line["shear"], u_foe, calib, (z0, z1))
         cv2.polylines(layer, [pts], False, colour, 6 if line["solid"] else 3, cv2.LINE_AA)
-    drawn = layer.any(axis=2)
+        cv2.polylines(drawn, [pts], False, 255, 6 if line["solid"] else 3, cv2.LINE_AA)
     for x1, y1, x2, y2 in vehicle_boxes:
-        drawn[max(0, int(y1)): int(y2), max(0, int(x1)): int(x2)] = False
-    image[drawn] = layer[drawn]
+        drawn[max(0, int(y1)): int(y2), max(0, int(x1)): int(x2)] = 0
+    np.copyto(image, layer, where=(drawn > 0)[..., None])
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -305,24 +308,27 @@ def draw_objects(image: np.ndarray, objects: list[tuple[pd.Series, np.ndarray]])
         cv2.putText(image, label, (p1[0] + 1, top), cv2.FONT_HERSHEY_SIMPLEX, 0.75, colour, 2, cv2.LINE_AA)
 
 
-def fill_box_gaps(kin: pd.DataFrame, stride: int, max_gap: int = MAX_BOX_GAP) -> pd.DataFrame:
-    """Rows interpolated where a track misses up to `max_gap` processed frames (the detector lost a close vehicle for
-    a frame or two), so its box does not blink out of the clip. Other columns are the earlier row's."""
+def fill_box_gaps(kin: pd.DataFrame, stride: int, max_gap: int = MAX_BOX_GAP, step: int | None = None) -> pd.DataFrame:
+    """Rows interpolated between a track's boxes that are at most `max_gap` processed frames apart, at every `step`-th
+    frame: by default the processed frames the detector missed (it lost a close vehicle for a frame or two), so its box
+    does not blink out of the clip; with step=1 also every source frame in between, for a clip played at the video's
+    own frame rate. Other columns are the earlier row's."""
+    step = step or stride
     moving = [c for c in ("x1", "y1", "x2", "y2", "box_h", "z_m", "time_s") if c in kin]
     added = []
     for _, t in kin.sort_values("frame").groupby("track_id"):
         f = t.frame.to_numpy()
-        steps = np.diff(f)
-        for i in np.flatnonzero((steps > stride) & (steps <= stride * (max_gap + 1))):
-            a, b = t.iloc[i], t.iloc[i + 1]
-            for frame in range(int(f[i]) + stride, int(f[i + 1]), stride):
-                w = (frame - f[i]) / (f[i + 1] - f[i])
-                row = a.copy()
-                row["frame"] = frame
-                for c in moving:
-                    row[c] = a[c] + w * (b[c] - a[c])
-                added.append(row)
-    return pd.concat([kin, pd.DataFrame(added)], ignore_index=True) if added else kin
+        gaps = np.diff(f)
+        spans = np.flatnonzero((gaps > step) & (gaps <= stride * (max_gap + 1)))
+        if not len(spans):
+            continue
+        new = np.concatenate([np.arange(f[i] + step, f[i + 1], step) for i in spans])
+        rows = t.iloc[np.searchsorted(f, new) - 1].copy()
+        rows["frame"] = new
+        for c in moving:
+            rows[c] = np.interp(new, f, t[c].to_numpy(float))
+        added.append(rows)
+    return pd.concat([kin, *added], ignore_index=True) if added else kin
 
 
 def known_plates(analysis_dir: Path, kin: pd.DataFrame) -> dict[int, str]:
@@ -352,7 +358,9 @@ def main() -> None:
                         help="Folder with infrastructure.parquet / lanes.parquet (default: the video's analysis folder)")
     parser.add_argument("--corpus", type=Path, default=ROOT / "results" / "corpus")
     parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--width", type=int, default=None, help="Output width in px (default: the video's own)")
+    parser.add_argument("--crf", type=int, default=20, help="H.264 quality: lower is sharper and larger (18-28)")
+    parser.add_argument("--max-mbps", type=float, default=None, help="Bit-rate cap, for clips played from a web page")
     parser.add_argument("--min-box-h", type=float, default=18)
     parser.add_argument("--no-infrastructure", action="store_true", help="Do not draw lane lines, signals and signs")
     parser.add_argument("--no-vehicles", action="store_true", help="Draw only the road infrastructure and the banner")
@@ -380,15 +388,13 @@ def main() -> None:
     kin = kin.merge(tracks[["track_id", "relation", "relation_confidence", *extra]], on="track_id", how="left")
     end_s = args.start_s + args.duration_s
     stride = int(calib.get("stride", 1))
-    origin = int(kin.frame.min()) % stride if len(kin) else 0
     kin = kin[(kin.time_s >= args.start_s - 1) & (kin.time_s < end_s + 1)]
-    kin = fill_box_gaps(kin, stride)
+    detected = set(kin.frame)
+    # the detector ran on every stride-th frame; the clip has every frame, the boxes in between interpolated
+    kin = fill_box_gaps(kin, stride, step=1)
     kin = kin[(kin.time_s >= args.start_s) & (kin.time_s < end_s)]
     frames = kin.groupby("frame")
     present = set(frames.groups)
-    # every processed frame of the window, with or without vehicles, so an empty road does not cut time from the clip
-    first = origin + stride * int(np.ceil((args.start_s * fps - origin) / stride))
-    processed = list(range(first, int(np.ceil(end_s * fps)), stride))
 
     lanes = object_boxes = line_tracks = None
     lanes_path = infra_dir / "lanes.parquet"
@@ -402,28 +408,23 @@ def main() -> None:
 
     out = args.out or ROOT / "demos" / f"typology_{args.video}_{int(args.start_s)}s.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)
-    scale = args.width / calib["width"]
-    size = (args.width, int(round(calib["height"] * scale)))
-    writer = VideoOut(out, calib["fps"], size)
+    width = args.width or calib["width"]
+    scale = width / calib["width"]
+    size = (width, int(round(calib["height"] * scale)) // 2 * 2)
+    writer = VideoOut(out, fps, size, crf=args.crf, max_mbps=args.max_mbps)
     cap = open_video(args.videos / f"{args.video}.mp4")
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(args.start_s * fps))
-    idx = int(args.start_s * fps)
+    first = int(np.ceil(args.start_s * fps))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     annotator = None
     if not args.no_plates:
         from bikesafe.plates import PlateAnnotator
 
         annotator = PlateAnnotator(plates)
-    targets = iter(processed)
-    target = next(targets, None)
-    while target is not None:
-        ok = cap.grab()
+    # every frame of the window, with or without vehicles, so an empty road does not cut time from the clip
+    for target in range(first, int(np.ceil(end_s * fps))):
+        ok, image = cap.read()
         if not ok:
             break
-        if idx < target:
-            idx += 1
-            continue
-        _, image = cap.retrieve()
-        idx += 1
         in_frame = frames.get_group(target) if target in present else kin.iloc[:0]
         rows = in_frame if not args.no_vehicles else in_frame.iloc[:0]
         if "n_det" in rows:  # a vehicle boxed twice is drawn once, with its longest track's box
@@ -438,7 +439,8 @@ def main() -> None:
                 draw_lane_lines(image, drawn, u_foe, calib, in_bike_lane, in_frame[["x1", "y1", "x2", "y2"]].to_numpy(float))
             draw_objects(image, object_boxes(target))
         if annotator is not None and len(rows):  # on the full-resolution frame, so plates are large enough to read
-            annotator(image, rows[["x1", "y1", "x2", "y2"]].to_numpy(float), rows.track_id.tolist(), scale)
+            annotator(image, rows[["x1", "y1", "x2", "y2"]].to_numpy(float), rows.track_id.tolist(), scale,
+                      find=target in detected)
         for r in rows.itertuples():
             colour = RELATION_COLOURS_BGR.get(r.relation, (255, 255, 255))
             far = not r.z_m <= LABEL_MAX_Z
@@ -465,8 +467,8 @@ def main() -> None:
         cv2.putText(image, banner, (16, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (245, 245, 245), 2, cv2.LINE_AA)
         if not args.no_vehicles:
             draw_legend(image)
-        writer.write(cv2.resize(image, size, interpolation=cv2.INTER_AREA))
-        target = next(targets, None)
+        writer.write(image if size == (image.shape[1], image.shape[0]) else
+                     cv2.resize(image, size, interpolation=cv2.INTER_AREA))
     writer.release()
     cap.release()
     plates_note = "" if annotator is None else f"; {annotator.plates_drawn} plate boxes drawn"

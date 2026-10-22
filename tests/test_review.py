@@ -62,16 +62,14 @@ def store(tmp_path, monkeypatch):
         tmp_path / "corpus" / video / "tracks_typed.csv", index=False)
     labels_dir = tmp_path / "labels"
     labels_dir.mkdir()
-    monkeypatch.setattr(labels_module, "ANCHORS", labels_dir / "track_anchors.csv")
-    monkeypatch.setattr("bikesafe.review.load_anchors", lambda: labels_module.load_anchors(labels_dir / "track_anchors.csv"))
-    monkeypatch.setattr("bikesafe.review.append_anchors", lambda rows: labels_module.append_anchors(
-        rows, labels_dir / "track_anchors.csv"))
+    # anchors are written beside the labels (a run elsewhere, e.g. Colab with --labels, must not touch data/typology)
+    monkeypatch.setattr(labels_module, "ANCHORS", tmp_path / "not_here.csv")
     s = Store(tmp_path / "analysis", tmp_path / "perception", tmp_path / "corpus", tmp_path / "videos", labels_dir,
               tmp_path / "cache")
     return s, video, labels_dir
 
 
-def test_a_new_vehicle_label_is_anchored_logged_and_undone(store):
+def test_a_new_vehicle_label_is_anchored_logged_and_undone(store, tmp_path):
     s, video, labels_dir = store
     assert {i["item"] for i in s.vehicle_queue("new")} == {5, 6, 7}
     s.save({"kind": "vehicle", "video": video, "item": 5, "label": "adjacent_same", "model": "parked",
@@ -79,6 +77,7 @@ def test_a_new_vehicle_label_is_anchored_logged_and_undone(store):
     labels = pd.read_csv(labels_dir / "track_labels.csv")
     assert labels.iloc[0].label == "adjacent_same" and labels.iloc[0].labeler == "prof"
     assert len(pd.read_csv(labels_dir / "track_anchors.csv")) == 4
+    assert not (tmp_path / "not_here.csv").exists()
     assert 5 not in {i["item"] for i in s.vehicle_queue("new")}
     assert s.undo("prof")["ok"]
     assert pd.read_csv(labels_dir / "track_labels.csv").empty
@@ -102,3 +101,43 @@ def test_verifying_a_label_replaces_it_and_undo_restores_it(store):
 def test_api_payloads_carry_no_nan():
     assert clean({"a": [1.0, float("nan")], "b": np.float64("inf"), "c": "NaN"}) == {"a": [1.0, None], "b": None,
                                                                                     "c": "NaN"}
+
+
+def test_a_track_clip_plays_every_frame_with_the_box_in_between(tmp_path):
+    pytest.importorskip("imageio_ffmpeg")
+    import cv2
+
+    from bikesafe.review import track_clip
+
+    video = tmp_path / "ride.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"mp4v"), 24.0, (320, 180))
+    for _ in range(72):
+        writer.write(np.full((180, 320, 3), 60, np.uint8))
+    writer.release()
+    frames = np.arange(24, 48, 2)  # detected on every second frame
+    dets = pd.DataFrame({"frame": frames, "track_id": 5, "x1": 100.0, "y1": 60.0, "x2": 200.0, "y2": 140.0})
+    out = tmp_path / "clip.mp4"
+    track_clip(video, dets, 5, out)
+    cap = cv2.VideoCapture(str(out))
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == (46 - 24 + 1) + 2 * 12  # the track, half a second either side
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 12 + 3)  # frame 27: not detected, box interpolated
+    ok, image = cap.read()
+    cap.release()
+    magenta = (image[..., 0] > 180) & (image[..., 1] < 90) & (image[..., 2] > 180)
+    assert ok and magenta.sum() > 500
+
+
+def test_an_exported_page_runs_without_a_server_and_its_decisions_import(store, tmp_path, monkeypatch):
+    from bikesafe.review import export, import_decisions
+
+    s, video, labels_dir = store
+    monkeypatch.setattr(s, "image", lambda kind, video, item, row=None: b"media")
+    export(s, tmp_path / "site", per_queue=2)
+    queue = json.loads((tmp_path / "site" / "queue_vehicle_new.json").read_text())
+    assert len(queue) == 2 and (tmp_path / "site" / "media" / video / f"clip_{queue[0]['item']}.mp4").exists()
+    assert "const STATIC = true;" in (tmp_path / "site" / "index.html").read_text()
+    decisions = tmp_path / "decisions.json"
+    decisions.write_text(json.dumps([{"kind": "vehicle", "video": video, "item": 5, "label": "oncoming",
+                                      "model": "parked", "reviewer": "prof", "time": "2026-10-23T10:00:00"}]))
+    assert import_decisions(s, decisions) == 1
+    assert pd.read_csv(labels_dir / "track_labels.csv").iloc[0].label == "oncoming"

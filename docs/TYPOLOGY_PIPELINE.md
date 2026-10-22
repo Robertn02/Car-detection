@@ -230,17 +230,24 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
    - The riding context is CLIP's (the reviewed-frame probe). The lane-paint detector's bike-lane call is reported
      beside it (`in_bike_lane`, `bike_lane_score`) and enters the relation features, but does not override the
      context: it finds most painted bike lanes and also calls most shared roads with an edge line bike lanes (step 6).
-   - Colour-coded overlay clips in `demos/`, with lane lines, signals (by state), signs with their type and text, one
-     box per vehicle, and each licence plate boxed and read out. Lane lines and sign boxes are measured twice a
+   - Colour-coded overlay clips (`bikesafe.render`; the demos are on the
+     [project page](https://robertn02.github.io/Car-detection/)), with lane lines, signals (by state), signs with their
+     type and text, one box per vehicle, and each licence plate boxed and read out. A clip has every frame of the
+     video at its full size: vehicles are detected on every second frame, so their boxes (and plates, which move with
+     their vehicle's box) are interpolated on the frames in between. Lane lines and sign boxes are measured twice a
      second; in between they are interpolated, and a line is drawn only where it was found on two of three
      consecutive samples, no further ahead than its paint was seen, not across a crosswalk, and behind the vehicles.
      Clips are H.264 (libx264, CRF 20, from the ffmpeg bundled with `imageio-ffmpeg`), so they play in a browser and
-     in slides; on these clips that matched OpenCV's MPEG-4 in PSNR at 70% of the size.
+     in slides; the web demos are CRF 23 capped at 10 Mbit/s so they stream (`scripts/build_site.py`).
 9. **Human review loop** - `bikesafe.review`
    - `python -m bikesafe.review` serves a review page on the local machine (http://127.0.0.1:8765). It is the
      annotation framework of the pipeline: the models' answers are the starting point, a person confirms or
      corrects them, and the corrections are what the models learn from next.
-   - *Vehicles.* Each vehicle is shown as an 8-frame loop of its track (its box magenta, the others grey) with a zoom,
+   - The project page has a copy that needs no server (`bikesafe.review --export`): the first 20 items of each queue
+     with their clips and crops, as they were when it was made. Decisions made there stay in the viewer's browser
+     until downloaded from its Progress tab; `bikesafe.review --import decisions.json` adds them to the labels.
+   - *Vehicles.* Each vehicle is shown as a looping clip of its track at the video's frame rate (its box magenta, the
+     others grey; tracks over 8 s play faster) with a zoom,
      the model's probabilities and the rule baseline's answer. Keys 1-5 pick the relation, Enter accepts the model, U
      marks it unclear, N not a vehicle, Z undoes. The "new" queue ranks unlabelled vehicles within 15 m by how likely
      the model is wrong - low probability, and conflicts with the physics (called parked while in the rider's path, or

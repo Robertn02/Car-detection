@@ -4,6 +4,8 @@ From a handlebar camera video, finds every vehicle and how it relates to the rid
 same way**, **oncoming**, **parked**, **side road / crossing** - plus the riding context, traffic signals, traffic
 signs (typed and read), licence plates, and events such as overtakes, close passes and red-light waits.
 
+**[Watch the demos and try the review page](https://robertn02.github.io/Car-detection/)** - in the browser, nothing to install.
+
 ## Try it on your video
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb)
@@ -22,9 +24,10 @@ whole video (a 20-minute ride takes about 1.5 hours on an L4).
 
 | Painted bike lane | Following a car from a red light | Parked rows, then a red light |
 | --- | --- | --- |
-| [![bike lane](demos/overlay_006_bikelane_440s.jpg)](demos/overlay_006_bikelane_440s.mp4) | [![following](demos/overlay_005_following_280s.jpg)](demos/overlay_005_following_280s.mp4) | [![parked](demos/overlay_006_parked_700s.jpg)](demos/overlay_006_parked_700s.mp4) |
+| [![bike lane](demos/overlay_006_bikelane_440s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_bikelane_440s) | [![following](demos/overlay_005_following_280s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_280s) | [![parked](demos/overlay_006_parked_700s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_700s) |
 
-Box colours: red in my lane, orange other lane, magenta oncoming, grey parked, blue side road.
+Click a picture to play the clip (60 s, the camera's full size and frame rate). Box colours: red in my lane, orange
+other lane, magenta oncoming, grey parked, blue side road.
 
 ## Outputs
 
@@ -58,6 +61,9 @@ python -m bikesafe.review      # open http://127.0.0.1:8765
 Shows the model's answers - vehicles, signs, plates - most likely errors first. Confirm or correct with one key;
 "Retrain" learns from the corrections. In Colab, the notebook's last cell opens it.
 
+A copy that needs no server is on the [project page](https://robertn02.github.io/Car-detection/review/): decisions made there stay in the browser until
+downloaded (Progress tab); `python -m bikesafe.review --import decisions.json` adds them to the labels.
+
 ## Run locally
 
 Needs an NVIDIA GPU:
@@ -79,7 +85,7 @@ python -m bikesafe.render <video> --start-s 300 --duration-s 60   # an overlay c
 | `bikesafe/` | the pipeline (`run.py` runs every stage) |
 | `docs/` | how it works, accuracy, limitations, output columns |
 | `results/` | per-ride tables and model evaluation |
-| `demos/` | overlay clips |
+| `demos/` | demo posters; the clips and the review copy are on the `gh-pages` branch (`scripts/build_site.py`) |
 | `data/typology/` | labels ([labelling guide](data/typology/LABELING_GUIDE.md)) |
 | `models/` | detectors and trained models |
 | `scripts/` | Colab notebooks, CARC job, evaluation, report builder |

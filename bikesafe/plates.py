@@ -290,33 +290,47 @@ def identity_audit(plates: pd.DataFrame, vehicle_of: dict[int, int], spans: pd.D
 
 class PlateAnnotator:
     """Draws each readable plate's box and text on overlay frames: the track's consensus text from plates.parquet
-    when there is one, otherwise a confident read of this frame. Plates that cannot be read are not boxed."""
+    when there is one, otherwise a confident read of this frame. Plates that cannot be read are not boxed.
+
+    Plates are looked for on the frames the vehicles were detected on (find=True). On the frames in between (find=False)
+    each plate found on the last such frame is drawn at the same place within its vehicle's (interpolated) box - the
+    plate finder is most of the time an overlay clip takes to render."""
 
     def __init__(self, known: dict[int, str] | None = None, reader: PlateReader | None = None) -> None:
         self.known = known or {}
         self.reader = reader or PlateReader()
         self.plates_drawn = 0
+        self.last: dict[int, tuple[np.ndarray, str]] = {}  # track id -> plate box relative to its vehicle box, text
 
-    def __call__(self, image: np.ndarray, boxes: np.ndarray, track_ids: list[int], scale: float = 1.0) -> None:
+    def __call__(self, image: np.ndarray, boxes: np.ndarray, track_ids: list[int], scale: float = 1.0,
+                 find: bool = True) -> None:
         boxes = np.asarray(boxes, float).reshape(-1, 4)
+        if find:
+            self.last = {}
+            for i, plate, _ in self.reader.finder.find(image, boxes):
+                if plate_owner(plate, boxes) != i:
+                    continue
+                text = self.known.get(int(track_ids[i]))
+                if text is None:
+                    text, _ = self.reader.read_crop(image, plate)
+                if text:
+                    size = np.maximum(boxes[i, 2:] - boxes[i, :2], 1.0)
+                    self.last[int(track_ids[i])] = ((plate - np.tile(boxes[i, :2], 2)) / np.tile(size, 2), text)
+        for box, track_id in zip(boxes, track_ids):
+            if int(track_id) in self.last:
+                relative, text = self.last[int(track_id)]
+                self._draw(image, np.tile(box[:2], 2) + relative * np.tile(box[2:] - box[:2], 2), text, scale)
+
+    def _draw(self, image: np.ndarray, plate: np.ndarray, text: str, scale: float) -> None:
         thick = max(2, int(round(2 / scale)))
         font = 0.6 / scale
-        for i, plate, _ in self.reader.finder.find(image, boxes):
-            if plate_owner(plate, boxes) != i:
-                continue
-            text = self.known.get(int(track_ids[i]))
-            if text is None:
-                text, _ = self.reader.read_crop(image, plate)
-            if not text:
-                continue
-            x1, y1, x2, y2 = plate.astype(int)
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), thick)
-            self.plates_drawn += 1
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
-            top = min(image.shape[0] - 2, y2 + th + 8)
-            cv2.rectangle(image, (x1, top - th - 6), (x1 + tw + 6, top + 2), (0, 0, 0), -1)
-            cv2.putText(image, text, (x1 + 3, top - 2), cv2.FONT_HERSHEY_SIMPLEX, font, (0, 255, 255), thick,
-                        cv2.LINE_AA)
+        x1, y1, x2, y2 = plate.astype(int)
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), thick)
+        self.plates_drawn += 1
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
+        top = min(image.shape[0] - 2, y2 + th + 8)
+        cv2.rectangle(image, (x1, top - th - 6), (x1 + tw + 6, top + 2), (0, 0, 0), -1)
+        cv2.putText(image, text, (x1 + 3, top - 2), cv2.FONT_HERSHEY_SIMPLEX, font, (0, 255, 255), thick, cv2.LINE_AA)
 
 
 def main() -> None:
