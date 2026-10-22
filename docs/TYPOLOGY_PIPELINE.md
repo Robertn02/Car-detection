@@ -278,6 +278,19 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      instability). The part of RLHF that carries over - people judging the model's own outputs, in a loop - is what
      this tool does.
 
+10. **Location** - `bikesafe.gps`
+   - `python -m bikesafe.gps --strava <export folder>` matches each video to the Strava activity recorded while it
+     was filmed and writes where the rider was in each second (`gps_1s.csv`). The camera's clock is not the phone's:
+     the offset is the lag (within 3 minutes) at which the bike speed measured from the video best correlates with the
+     GPS speed. Positions and speeds near where a track starts or ends are left out (privacy zones, as on Strava),
+     since the tables and the project page are public. Each zone's radius is 400-800 m, drawn from the track itself:
+     with one radius for all, the shown routes' ends would lie on circles of known size round home and work.
+   - The project page uses it twice: a map beside each demo whose dot follows the video, and an exposure map of all
+     rides - the per-second counts (moving traffic, vehicles in the rider's lane, parked cars in the door zone) as a
+     heatmap, the riding context as coloured lines, and close passes and overtakes as points. The heat is drawn like
+     Strava's, as thin unblurred lines, each stretch coloured by the counts of all the seconds within about 30 m of it;
+     it is time-weighted: a minute waiting at a red light beside traffic counts sixty times.
+
 ## Running at scale on a GPU workstation
 
 ```bash

@@ -88,6 +88,21 @@ The input of the relation model and its output per track (`relation`, `proba_*`,
 the vehicle-level answer (`vehicle_relation`, `vehicle_id`). About 130 columns; the features are described in
 `TYPOLOGY_PIPELINE.md` (step 5). `rule_relation` is the transparent rule baseline. Use `vehicles.csv` for counts.
 
+### `gps_1s.csv` - one row per second, where the rider was (rides with a Strava track)
+
+Written by `python -m bikesafe.gps --strava <Strava export folder>`; joins to `timeline_1s.csv` on `second`.
+
+| Column | Meaning |
+|---|---|
+| `second`, `timestamp_local` | As in `timeline_1s.csv` |
+| `lat`, `lon` | Position from the GPS track at that second, after correcting the camera clock (below); empty within 400-800 m (different for each ride and end) of where the ride's track starts or ends (privacy zone), or outside the track |
+| `gps_speed_mps` | Speed over that second from the GPS track; empty in the privacy zones |
+| `in_privacy_zone` | The position was left out for privacy |
+
+`results/corpus/gps_sync.json` gives, per ride, the Strava activity, `offset_s` (seconds the camera clock is behind
+the GPS clock, found where the video's speed best matches the GPS speed) and `speed_correlation` (how well they match
+there; below 0.5 the clocks are used as they are and `synced` is false).
+
 ### `identity_audit.json`
 
 How the vehicle ids agree with the plates read: tracks with one plate split over several vehicle ids (missed joins,

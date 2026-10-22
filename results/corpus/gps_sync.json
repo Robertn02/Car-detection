@@ -1,0 +1,56 @@
+{
+  "VID_20260209_090112_00_001": {
+    "activity": 17341137924,
+    "offset_s": -10,
+    "speed_correlation": 0.882,
+    "synced": true,
+    "seconds_overlapping": 829,
+    "seconds_with_position": 589,
+    "seconds_in_privacy_zone": 240,
+    "seconds_outside_track": 37
+  },
+  "VID_20260209_183334_00_002": {
+    "activity": 17346293106,
+    "offset_s": -12,
+    "speed_correlation": 0.892,
+    "synced": true,
+    "seconds_overlapping": 1227,
+    "seconds_with_position": 774,
+    "seconds_in_privacy_zone": 453,
+    "seconds_outside_track": 0
+  },
+  "VID_20260223_090217_00_003": {
+    "activity": 17496167726,
+    "offset_s": -50,
+    "speed_correlation": 0.914,
+    "synced": true,
+    "seconds_overlapping": 973,
+    "seconds_with_position": 801,
+    "seconds_in_privacy_zone": 172,
+    "seconds_outside_track": 27
+  },
+  "VID_20260223_183551_00_004": {
+    "activity": 17501217135,
+    "offset_s": -52,
+    "speed_correlation": 0.84,
+    "synced": true,
+    "seconds_overlapping": 1340,
+    "seconds_with_position": 904,
+    "seconds_in_privacy_zone": 436,
+    "seconds_outside_track": 0
+  },
+  "VID_20260224_091119_00_005": {
+    "activity": null,
+    "note": "no Strava activity recorded during the video"
+  },
+  "VID_20260224_162848_00_006": {
+    "activity": 17512740221,
+    "offset_s": -53,
+    "speed_correlation": 0.848,
+    "synced": true,
+    "seconds_overlapping": 1254,
+    "seconds_with_position": 983,
+    "seconds_in_privacy_zone": 271,
+    "seconds_outside_track": 0
+  }
+}

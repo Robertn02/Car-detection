@@ -4,7 +4,8 @@ From a handlebar camera video, finds every vehicle and how it relates to the rid
 same way**, **oncoming**, **parked**, **side road / crossing** - plus the riding context, traffic signals, traffic
 signs (typed and read), licence plates, and events such as overtakes, close passes and red-light waits.
 
-**[Watch the demos and try the review page](https://robertn02.github.io/Car-detection/)** - in the browser, nothing to install.
+**[Watch the demos, see the exposure map and try the review page](https://robertn02.github.io/Car-detection/)** - in
+the browser, nothing to install.
 
 ## Try it on your video
 
@@ -39,6 +40,7 @@ Per ride, in [`results/corpus/`](results/corpus) ([every column explained](docs/
 | `timeline_1s.csv` | second | riding context, speed, traffic in view, signal, signs (local time, joins to GPS) |
 | `signs.csv` | sign or signal | sign type and text, posted speed limit |
 | `events.csv` | event | overtakes, close passes, crossing traffic, stop signs, red-light waits |
+| `gps_1s.csv` | second | where the rider was, from the Strava track (`python -m bikesafe.gps --strava <export>`) |
 
 ## Results
 
