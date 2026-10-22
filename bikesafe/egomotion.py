@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import ROOT, open_video, read_json, resolve_video
+from bikesafe.common import ROOT, VIDEOS, open_video, read_json, resolve_video
 from bikesafe.geometry import fit_horizon
 
 SCALE = 0.5
@@ -128,7 +128,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("perception_dirs", nargs="+", type=Path)
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
-    parser.add_argument("--videos", type=Path, default=ROOT / "videos")
+    parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--max-corners", type=int, default=300)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()

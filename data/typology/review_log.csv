@@ -1,0 +1,61 @@
+time,reviewer,kind,video,item,model,model_conf,human,text,model_text
+2026-10-21T19:23:26,reviewer,vehicle,VID_20260224_162848_00_006,9375,parked,0.295,oncoming,,
+2026-10-21T19:24:22,reviewer,sign,VID_20260224_162848_00_006,218,other_sign,0.342,other_sign,STREET FLAVIERS,STREET FLAVIERS
+2026-10-21T19:24:28,reviewer,sign,VID_20260224_162848_00_006,211,other_sign,0.245,other_sign,三,三
+2026-10-21T19:24:32,reviewer,sign,VID_20260224_162848_00_006,171,other_sign,0.257,other_sign,三,三
+2026-10-21T19:24:37,reviewer,sign,VID_20260224_162848_00_006,116,other_sign,0.302,other_sign,-,-
+2026-10-21T19:24:39,reviewer,sign,VID_20260224_162848_00_006,205,other_sign,0.337,other_sign,1,1
+2026-10-21T19:24:56,reviewer,sign,VID_20260224_162848_00_006,142,other_sign,0.335,other_sign,,
+2026-10-21T19:25:13,reviewer,sign,VID_20260224_162848_00_006,190,other_sign,0.344,other_sign,No Parking,R
+2026-10-21T19:25:18,reviewer,sign,VID_20260224_162848_00_006,136,other_sign,0.406,skip,,
+2026-10-21T19:25:25,reviewer,sign,VID_20260224_162848_00_006,188,other_sign,0.421,other_sign,No Parking,
+2026-10-21T19:25:30,reviewer,sign,VID_20260224_162848_00_006,102,other_sign,0.449,skip,-,-
+2026-10-21T19:25:33,reviewer,sign,VID_20260224_162848_00_006,123,other_sign,0.431,skip,,
+2026-10-21T19:25:40,reviewer,sign,VID_20260224_162848_00_006,175,other_sign,0.464,street_name,18 1300 Y,18 1300 Y
+2026-10-21T19:25:49,reviewer,sign,VID_20260224_162848_00_006,135,other_sign,0.465,skip,1,1
+2026-10-21T19:25:52,reviewer,sign,VID_20260224_162848_00_006,134,other_sign,0.467,not_a_sign,-,-
+2026-10-21T19:25:56,reviewer,sign,VID_20260224_162848_00_006,194,other_sign,0.499,skip,-,-
+2026-10-21T19:25:58,reviewer,sign,VID_20260224_162848_00_006,110,not_a_sign,0.614,not_a_sign,66,66
+2026-10-21T19:26:03,reviewer,sign,VID_20260224_162848_00_006,180,other_sign,0.567,not_a_sign,T,T
+2026-10-21T19:26:05,reviewer,sign,VID_20260224_162848_00_006,146,not_a_sign,0.679,street_name,,
+2026-10-21T19:26:09,reviewer,sign,VID_20260224_162848_00_006,138,not_a_sign,0.711,not_a_sign,1,1
+2026-10-21T19:26:18,reviewer,sign,VID_20260224_162848_00_006,204,warning,0.527,skip,---,---
+2026-10-21T19:26:22,reviewer,sign,VID_20260224_162848_00_006,117,other_sign,0.783,not_a_sign,,
+2026-10-21T19:26:26,reviewer,sign,VID_20260224_162848_00_006,158,other_sign,0.789,not_a_sign,,
+2026-10-21T19:26:30,reviewer,sign,VID_20260224_162848_00_006,198,parking,0.503,street_name,,
+2026-10-21T19:26:35,reviewer,sign,VID_20260224_162848_00_006,159,street_name,0.519,not_a_sign,,
+2026-10-21T19:26:38,reviewer,sign,VID_20260224_162848_00_006,179,bike,0.53,bike,C,C
+2026-10-21T19:26:41,reviewer,sign,VID_20260224_162848_00_006,108,other_sign,0.824,not_a_sign,,
+2026-10-21T19:26:44,reviewer,sign,VID_20260224_162848_00_006,124,street_name,0.608,street_name,Convention Center Crypto.com Arena,Convention Center Crypto.com Arena
+2026-10-21T19:26:48,reviewer,sign,VID_20260224_162848_00_006,220,not_a_sign,0.856,skip,1,1
+2026-10-21T19:26:51,reviewer,sign,VID_20260224_162848_00_006,162,parking,0.555,not_a_sign,-,-
+2026-10-21T19:26:55,reviewer,sign,VID_20260224_162848_00_006,193,do_not_enter,0.565,do_not_enter,-,-
+2026-10-21T19:26:59,reviewer,sign,VID_20260224_162848_00_006,212,other_sign,0.875,warning,,
+2026-10-21T19:27:03,reviewer,sign,VID_20260224_162848_00_006,161,speed_limit,0.625,not_a_sign,509,509
+2026-10-21T19:27:10,reviewer,sign,VID_20260224_162848_00_006,149,street_name,0.635,other_sign,C,C
+2026-10-21T19:27:15,reviewer,sign,VID_20260224_162848_00_006,121,guide,0.641,guide,-,-
+2026-10-21T19:27:18,reviewer,sign,VID_20260224_162848_00_006,214,parking,0.634,parking,R,R
+2026-10-21T19:27:23,reviewer,sign,VID_20260224_162848_00_006,128,not_a_sign,0.915,not_a_sign,,
+2026-10-21T19:27:25,reviewer,sign,VID_20260224_162848_00_006,213,street_name,0.721,street_name,Convention Center Crypto.com Arena,Convention Center Crypto.com Arena
+2026-10-21T19:27:28,reviewer,sign,VID_20260224_162848_00_006,160,not_a_sign,0.939,not_a_sign,-,-
+2026-10-21T19:27:32,reviewer,sign,VID_20260224_162848_00_006,106,other_sign,0.936,not_a_sign,-,-
+2026-10-21T19:27:36,reviewer,sign,VID_20260224_162848_00_006,206,warning,0.646,warning,-,-
+2026-10-21T19:27:38,reviewer,sign,VID_20260224_162848_00_006,219,not_a_sign,0.977,not_a_sign,T,T
+2026-10-21T19:27:49,reviewer,sign,VID_20260224_162848_00_006,170,other_sign,0.964,not_a_sign,,
+2026-10-21T19:27:54,reviewer,sign,VID_20260224_162848_00_006,153,not_a_sign,0.988,not_a_sign,,
+2026-10-21T19:28:00,reviewer,sign,VID_20260224_162848_00_006,200,street_name,0.714,do_not_enter,SPIES,SPIES
+2026-10-21T19:28:08,reviewer,sign,VID_20260224_162848_00_006,105,other_sign,0.999,not_a_sign,,
+2026-10-22T21:13:49,reviewer,vehicle,VID_20260209_183334_00_002,431,parked,0.374,not_vehicle,,
+2026-10-22T21:14:08,reviewer,vehicle,VID_20260223_183551_00_004,1035,parked,0.31,unclear,,
+2026-10-22T21:14:30,reviewer,vehicle,VID_20260223_183551_00_004,161,parked,0.288,cross_side,,
+2026-10-22T21:14:36,reviewer,vehicle,VID_20260209_183334_00_002,338,parked,0.341,parked,,
+2026-10-22T21:14:49,reviewer,vehicle,VID_20260224_162848_00_006,9288,parked,0.374,ego_lane,,
+2026-10-22T21:14:54,reviewer,vehicle,VID_20260223_183551_00_004,7756,parked,0.426,oncoming,,
+2026-10-22T21:14:58,reviewer,vehicle,VID_20260223_183551_00_004,8435,parked,0.45,oncoming,,
+2026-10-22T21:15:06,reviewer,vehicle,VID_20260223_183551_00_004,980,parked,0.361,parked,,
+2026-10-22T21:15:11,reviewer,vehicle,VID_20260224_162848_00_006,3402,parked,0.494,parked,,
+2026-10-22T21:15:15,reviewer,vehicle,VID_20260223_183551_00_004,8750,parked,0.403,parked,,
+2026-10-22T21:15:21,reviewer,vehicle,VID_20260223_183551_00_004,8613,parked,0.41,oncoming,,
+2026-10-22T21:15:27,reviewer,vehicle,VID_20260224_162848_00_006,11787,parked,0.528,oncoming,,
+2026-10-22T21:15:31,reviewer,vehicle,VID_20260223_183551_00_004,6485,parked,0.447,parked,,
+2026-10-22T21:15:34,reviewer,vehicle,VID_20260223_183551_00_004,2183,parked,0.552,parked,null,

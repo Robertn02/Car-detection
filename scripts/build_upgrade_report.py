@@ -803,7 +803,7 @@ def build(out: Path) -> None:
         c = corpus
         minutes = c.minutes.sum()
         rows = [["Measure (all rides)", "Value"], ["Minutes of video", f"{minutes:.1f}"]]
-        for col, label in (("minutes_in_painted_bike_lane", "Minutes in a painted bike lane"),
+        for col, label in (("minutes_bike_lane", "Minutes in a bike lane (riding context)"),
                            ("events_red_light_wait", "Waits at red lights"), ("events_stop_sign", "Stop signs passed"),
                            ("vehicles_counted", "Vehicles counted (within 15 m, at least 1 s)"),
                            ("tracks_counted", "Tracks counted by the earlier per-track rule"),

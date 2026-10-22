@@ -69,7 +69,7 @@ T006_067,VID_20260224_162848_00_006,2652,parked,claude-visual-review,
 T006_068,VID_20260224_162848_00_006,2878,cross_side,claude-visual-review,
 T006_069,VID_20260224_162848_00_006,4074,parked,claude-visual-review,box truck stopped at the cross-street curb
 T006_070,VID_20260224_162848_00_006,4397,oncoming,claude-visual-review,
-T006_071,VID_20260224_162848_00_006,5016,parked,claude-visual-review,
+T006_071,VID_20260224_162848_00_006,5016,unclear,claude-visual-review+audit,audit: box switches between vehicles (was parked)
 T006_072,VID_20260224_162848_00_006,5086,parked,claude-visual-review,
 T006_073,VID_20260224_162848_00_006,5695,unclear,claude-visual-review,
 T006_074,VID_20260224_162848_00_006,5749,parked,claude-visual-review,
@@ -135,7 +135,7 @@ T001_043,VID_20260209_090112_00_001,5143,parked,claude-visual-review,
 T001_044,VID_20260209_090112_00_001,5531,oncoming,claude-visual-review,across a wide boulevard
 T001_045,VID_20260209_090112_00_001,5779,parked,claude-visual-review,
 T001_046,VID_20260209_090112_00_001,6007,parked,claude-visual-review,stopped in the green bike lane
-T001_047,VID_20260209_090112_00_001,6180,parked,claude-visual-review,
+T001_047,VID_20260209_090112_00_001,6180,unclear,claude-visual-review+audit,"audit: small, box switches between vehicles (was parked)"
 T001_048,VID_20260209_090112_00_001,6187,parked,claude-visual-review,
 T001_049,VID_20260209_090112_00_001,6795,parked,claude-visual-review,
 T001_050,VID_20260209_090112_00_001,6896,parked,claude-visual-review,
@@ -192,7 +192,7 @@ T003_040,VID_20260223_090217_00_003,5594,cross_side,claude-visual-review,
 T003_041,VID_20260223_090217_00_003,5676,parked,claude-visual-review,
 T003_042,VID_20260223_090217_00_003,5680,adjacent_same,claude-visual-review,
 T003_043,VID_20260223_090217_00_003,5679,cross_side,claude-visual-review,
-T003_044,VID_20260223_090217_00_003,5681,parked,claude-visual-review,
+T003_044,VID_20260223_090217_00_003,5681,oncoming,claude-visual-review+audit,audit: comes toward the rider in the opposite lanes and leaves at the left edge in 2 s (was parked)
 T003_045,VID_20260223_090217_00_003,5966,adjacent_same,claude-visual-review,stopped in the travel lane beside the green bike lane
 T003_046,VID_20260223_090217_00_003,6261,oncoming,claude-visual-review,
 T003_047,VID_20260223_090217_00_003,6568,adjacent_same,claude-visual-review,
@@ -207,7 +207,7 @@ T003_055,VID_20260223_090217_00_003,7532,parked,claude-visual-review,
 T003_056,VID_20260223_090217_00_003,7792,parked,claude-visual-review,
 T003_057,VID_20260223_090217_00_003,7820,unclear,claude-visual-review,
 T003_058,VID_20260223_090217_00_003,7866,unclear,claude-visual-review,
-T003_059,VID_20260223_090217_00_003,8211,parked,claude-visual-review,
+T003_059,VID_20260223_090217_00_003,8211,unclear,claude-visual-review+audit,audit: pulling in or out beside parked cars; not judgeable (was parked)
 T003_060,VID_20260223_090217_00_003,8598,unclear,claude-visual-review,
 T005_001,VID_20260224_091119_00_005,23,parked,claude-visual-review,
 T005_002,VID_20260224_091119_00_005,24,parked,claude-visual-review,
@@ -241,7 +241,7 @@ T005_029,VID_20260224_091119_00_005,4947,adjacent_same,claude-visual-review,pass
 T005_030,VID_20260224_091119_00_005,5156,unclear,claude-visual-review,
 T005_031,VID_20260224_091119_00_005,5188,cross_side,claude-visual-review,
 T005_032,VID_20260224_091119_00_005,5241,cross_side,claude-visual-review,
-T005_033,VID_20260224_091119_00_005,5291,parked,claude-visual-review,
+T005_033,VID_20260224_091119_00_005,5291,unclear,claude-visual-review+audit,"audit: box switches between vehicles (crosswalk car, car ahead, car at right edge) (was parked)"
 T005_034,VID_20260224_091119_00_005,5334,unclear,claude-visual-review,reflection in a shop window
 T005_035,VID_20260224_091119_00_005,5410,oncoming,claude-visual-review,
 T005_036,VID_20260224_091119_00_005,5570,parked,claude-visual-review,
@@ -259,9 +259,9 @@ T005_047,VID_20260224_091119_00_005,7380,parked,claude-visual-review,
 T005_048,VID_20260224_091119_00_005,7524,cross_side,claude-visual-review,
 T005_049,VID_20260224_091119_00_005,7597,cross_side,claude-visual-review,
 T005_050,VID_20260224_091119_00_005,7641,cross_side,claude-visual-review,
-T005_051,VID_20260224_091119_00_005,7882,parked,claude-visual-review,
+T005_051,VID_20260224_091119_00_005,7882,unclear,claude-visual-review+audit,audit: box switches between vehicles (was parked)
 T005_052,VID_20260224_091119_00_005,8088,parked,claude-visual-review,
-T005_053,VID_20260224_091119_00_005,8090,parked,claude-visual-review,
+T005_053,VID_20260224_091119_00_005,8090,adjacent_same,claude-visual-review+audit,"audit: car ahead in the traffic lane, moves with the rider for 13 s (was parked)"
 T005_054,VID_20260224_091119_00_005,8501,parked,claude-visual-review,
 T005_055,VID_20260224_091119_00_005,8508,cross_side,claude-visual-review,
 T005_056,VID_20260224_091119_00_005,8845,adjacent_same,claude-visual-review,stopped traffic the rider filters past
@@ -302,7 +302,7 @@ T002_030,VID_20260209_183334_00_002,3953,cross_side,claude-visual-review,
 T002_031,VID_20260209_183334_00_002,3975,cross_side,claude-visual-review,
 T002_032,VID_20260209_183334_00_002,4090,parked,claude-visual-review,
 T002_033,VID_20260209_183334_00_002,4400,parked,claude-visual-review,
-T002_034,VID_20260209_183334_00_002,4405,parked,claude-visual-review,
+T002_034,VID_20260209_183334_00_002,4405,unclear,claude-visual-review+audit,"audit: small and dark, motion not judgeable (was parked)"
 T002_035,VID_20260209_183334_00_002,4436,parked,claude-visual-review,
 T002_036,VID_20260209_183334_00_002,4707,cross_side,claude-visual-review,Metro bus crossing
 T002_037,VID_20260209_183334_00_002,4781,cross_side,claude-visual-review,
@@ -311,8 +311,8 @@ T002_039,VID_20260209_183334_00_002,5172,parked,claude-visual-review,
 T002_040,VID_20260209_183334_00_002,5255,parked,claude-visual-review,
 T002_041,VID_20260209_183334_00_002,5424,cross_side,claude-visual-review,
 T002_042,VID_20260209_183334_00_002,5575,oncoming,claude-visual-review,
-T002_043,VID_20260209_183334_00_002,5587,parked,claude-visual-review,
-T002_044,VID_20260209_183334_00_002,5835,parked,claude-visual-review,
+T002_043,VID_20260209_183334_00_002,5587,adjacent_same,claude-visual-review+audit,"audit: car ahead in traffic, then passes on the right (was parked)"
+T002_044,VID_20260209_183334_00_002,5835,unclear,claude-visual-review+audit,"audit: small and dark, motion not judgeable (was parked)"
 T002_045,VID_20260209_183334_00_002,5925,unclear,claude-visual-review,building facade
 T002_046,VID_20260209_183334_00_002,5989,oncoming,claude-visual-review,
 T002_047,VID_20260209_183334_00_002,6084,unclear,claude-visual-review,gas station canopy
@@ -338,7 +338,7 @@ T005_066,VID_20260224_091119_00_005,4470,cross_side,claude-visual-review,
 T005_067,VID_20260224_091119_00_005,5145,cross_side,claude-visual-review,
 T005_068,VID_20260224_091119_00_005,5344,oncoming,claude-visual-review,
 T005_069,VID_20260224_091119_00_005,5345,parked,claude-visual-review,
-T005_070,VID_20260224_091119_00_005,5439,parked,claude-visual-review,
+T005_070,VID_20260224_091119_00_005,5439,oncoming,claude-visual-review+audit,"audit: opposite lanes, reaches the left edge within 3 s (was parked)"
 T005_071,VID_20260224_091119_00_005,5615,parked,claude-visual-review,
 T005_072,VID_20260224_091119_00_005,5685,parked,claude-visual-review,
 T005_073,VID_20260224_091119_00_005,5861,cross_side,claude-visual-review,
@@ -375,7 +375,7 @@ T001_079,VID_20260209_090112_00_001,5676,cross_side,claude-visual-review,
 T001_080,VID_20260209_090112_00_001,5825,cross_side,claude-visual-review,entering a gas station on the left
 T001_081,VID_20260209_090112_00_001,6058,cross_side,claude-visual-review,crossing ahead of the green bike lane under the overpass
 T001_082,VID_20260209_090112_00_001,7445,parked,claude-visual-review,
-T001_083,VID_20260209_090112_00_001,7824,parked,claude-visual-review,
+T001_083,VID_20260209_090112_00_001,7824,oncoming,claude-visual-review+audit,"audit: opposite lanes, reaches the left edge within 2 s (was parked)"
 T001_084,VID_20260209_090112_00_001,8064,cross_side,claude-visual-review,
 T003_061,VID_20260223_090217_00_003,123,parked,claude-visual-review,
 T003_062,VID_20260223_090217_00_003,1293,unclear,claude-visual-review,"trash bin, not a vehicle"
@@ -397,7 +397,7 @@ T006_095,VID_20260224_162848_00_006,1920,parked,claude-visual-review,
 T006_096,VID_20260224_162848_00_006,2244,parked,claude-visual-review,
 T006_097,VID_20260224_162848_00_006,3277,cross_side,claude-visual-review,
 T006_098,VID_20260224_162848_00_006,3464,cross_side,claude-visual-review,
-T006_099,VID_20260224_162848_00_006,4412,parked,claude-visual-review,passed after 20 s beside the rider
+T006_099,VID_20260224_162848_00_006,4412,adjacent_same,claude-visual-review+audit,"audit: red pickup in the traffic lane beside the bike lane, followed for 24 s, then passed (was parked)"
 T006_100,VID_20260224_162848_00_006,4418,oncoming,claude-visual-review,
 T006_101,VID_20260224_162848_00_006,4677,parked,claude-visual-review,
 T006_102,VID_20260224_162848_00_006,4949,adjacent_same,claude-visual-review,
@@ -420,8 +420,8 @@ T004_004,VID_20260223_183551_00_004,1546,cross_side,claude-visual-review,
 T004_005,VID_20260223_183551_00_004,1562,cross_side,claude-visual-review,
 T004_006,VID_20260223_183551_00_004,1576,cross_side,claude-visual-review,
 T004_007,VID_20260223_183551_00_004,1611,unclear,claude-visual-review,
-T004_008,VID_20260223_183551_00_004,1664,parked,claude-visual-review,
-T004_009,VID_20260223_183551_00_004,1691,parked,claude-visual-review,
+T004_008,VID_20260223_183551_00_004,1664,adjacent_same,claude-visual-review+audit,audit: car ahead in the traffic lane beside the bike lane (was parked)
+T004_009,VID_20260223_183551_00_004,1691,unclear,claude-visual-review+audit,"audit: small and dark, motion not judgeable (was parked)"
 T004_010,VID_20260223_183551_00_004,1825,oncoming,claude-visual-review,
 T004_011,VID_20260223_183551_00_004,2059,parked,claude-visual-review,
 T004_012,VID_20260223_183551_00_004,2205,oncoming,claude-visual-review,
@@ -433,3 +433,66 @@ T004_017,VID_20260223_183551_00_004,2690,unclear,claude-visual-review,too blurre
 T004_018,VID_20260223_183551_00_004,3031,adjacent_same,claude-visual-review,passing traffic in the next lane
 T004_019,VID_20260223_183551_00_004,3115,oncoming,claude-visual-review,
 T004_020,VID_20260223_183551_00_004,3167,adjacent_same,claude-visual-review,
+T001_085,VID_20260209_090112_00_001,5083,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_086,VID_20260209_090112_00_001,3348,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_087,VID_20260209_090112_00_001,4575,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_088,VID_20260209_090112_00_001,7773,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_089,VID_20260209_090112_00_001,5122,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_090,VID_20260209_090112_00_001,7066,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_091,VID_20260209_090112_00_001,2537,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T001_092,VID_20260209_090112_00_001,8581,parked,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_061,VID_20260209_183334_00_002,5443,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_062,VID_20260209_183334_00_002,3962,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_063,VID_20260209_183334_00_002,4690,adjacent_same,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_064,VID_20260209_183334_00_002,6920,ego_lane,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_065,VID_20260209_183334_00_002,2549,adjacent_same,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_066,VID_20260209_183334_00_002,6376,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_067,VID_20260209_183334_00_002,1754,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T002_068,VID_20260209_183334_00_002,6434,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_073,VID_20260223_090217_00_003,6899,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_074,VID_20260223_090217_00_003,5454,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_075,VID_20260223_090217_00_003,4216,adjacent_same,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_076,VID_20260223_090217_00_003,3750,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_077,VID_20260223_090217_00_003,3780,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_078,VID_20260223_090217_00_003,6766,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_079,VID_20260223_090217_00_003,1126,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T003_080,VID_20260223_090217_00_003,2976,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_021,VID_20260223_183551_00_004,8151,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_022,VID_20260223_183551_00_004,6012,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_023,VID_20260223_183551_00_004,1555,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_024,VID_20260223_183551_00_004,3321,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_025,VID_20260223_183551_00_004,2708,adjacent_same,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_026,VID_20260223_183551_00_004,4229,parked,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_027,VID_20260223_183551_00_004,8400,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T004_028,VID_20260223_183551_00_004,2644,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_085,VID_20260224_091119_00_005,4397,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_086,VID_20260224_091119_00_005,4430,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_087,VID_20260224_091119_00_005,7169,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_088,VID_20260224_091119_00_005,5444,oncoming,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_089,VID_20260224_091119_00_005,9220,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_090,VID_20260224_091119_00_005,7490,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_091,VID_20260224_091119_00_005,4575,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T005_092,VID_20260224_091119_00_005,2909,ego_lane,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_115,VID_20260224_162848_00_006,4486,adjacent_same,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_116,VID_20260224_162848_00_006,2340,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_117,VID_20260224_162848_00_006,2379,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_118,VID_20260224_162848_00_006,4153,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_119,VID_20260224_162848_00_006,5596,cross_side,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_120,VID_20260224_162848_00_006,7146,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_121,VID_20260224_162848_00_006,13548,parked,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_122,VID_20260224_162848_00_006,5333,unclear,claude-visual-review,2026-10 batch: near-range vehicles the model called moving or was unsure about
+T006_123,VID_20260224_162848_00_006,9375,oncoming,reviewer,review: model said parked
+T002_069,VID_20260209_183334_00_002,431,not_vehicle,reviewer,review: model said parked
+T004_029,VID_20260223_183551_00_004,1035,unclear,reviewer,review: model said parked
+T004_030,VID_20260223_183551_00_004,161,cross_side,reviewer,review: model said parked
+T002_070,VID_20260209_183334_00_002,338,parked,reviewer,review: model said parked
+T006_124,VID_20260224_162848_00_006,9288,ego_lane,reviewer,review: model said parked
+T004_031,VID_20260223_183551_00_004,7756,oncoming,reviewer,review: model said parked
+T004_032,VID_20260223_183551_00_004,8435,oncoming,reviewer,review: model said parked
+T004_033,VID_20260223_183551_00_004,980,parked,reviewer,review: model said parked
+T006_125,VID_20260224_162848_00_006,3402,parked,reviewer,review: model said parked
+T004_034,VID_20260223_183551_00_004,8750,parked,reviewer,review: model said parked
+T004_035,VID_20260223_183551_00_004,8613,oncoming,reviewer,review: model said parked
+T006_126,VID_20260224_162848_00_006,11787,oncoming,reviewer,review: model said parked
+T004_036,VID_20260223_183551_00_004,6485,parked,reviewer,review: model said parked
+T004_037,VID_20260223_183551_00_004,2183,parked,reviewer,review: model said parked

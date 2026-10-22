@@ -11,18 +11,30 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import ROOT, SCENES, read_json, write_json
+from bikesafe.common import ROOT, VIDEOS, SCENES, read_json, resolve_video, write_json
 from bikesafe.geometry import (DEFAULT_HFOV_DEG, detection_kinematics, ego_from_tracking, ego_motion, fit_horizon,
                                flow_grid_reference)
+from bikesafe.identity import CACHE as APPEARANCE_CACHE, appearance_descriptors, remap_ids, split_switches
 from bikesafe.infrastructure import REF_Z, parse_lines, per_second_summary
 from bikesafe.scene import crop_scores, scene_probabilities
 from bikesafe.stitch import stitch, vehicle_ids
 
 STATIC_MPS = 1.5
 CROSS_MPS = 1.5
-# 3: depth-free flow motion cues and lane-paint relations; 4: vehicle ids (bikesafe.stitch).
-# bikesafe.run recomputes tracks written by older versions.
-FEATURES_VERSION = 4
+# 3: depth-free flow motion cues and lane-paint relations; 4: vehicle ids (bikesafe.stitch); 5: share of a track's
+# samples whose flow is consistent with a static / co-moving / approaching vehicle, and where the vehicle stands
+# relative to the kerb (bikesafe.streetseg); 6: time spent in the rider's path, and in it while the rider is stopped;
+# 7: the vehicle's own motion while the rider is stopped. bikesafe.run recomputes tracks written by older versions.
+FEATURES_VERSION = 7
+CLOSING_STATIC, CLOSING_WITH, CLOSING_AGAINST = (0.7, 1.45), 0.5, 1.7  # closing_ratio bands
+GRID_STATIC, GRID_WITH, GRID_AGAINST = (0.7, 1.4), 0.45, 1.7  # grid_proj bands
+KERB_CLOSE_M = 0.8
+# The rider's path ahead: the vehicle's near edge within IN_PATH_M of the heading, within IN_PATH_Z. Farther out, or
+# with the box centre instead of its near edge, kerbside parked cars on a narrow or curving street count as "in path"
+# (34% of labelled parked tracks with 1.2 m / 20 m, against 7% with these values; in-my-lane: 50% and 28%).
+IN_PATH_M, IN_PATH_Z, STOPPED_MPS = 0.3, 10.0, 1.0
+# While the rider waits (ego speed below RIDER_STOPPED_MPS) the camera is still, so a box's motion is the vehicle's own
+OWN_MOVING_MPS, RIDER_STOPPED_MPS, MIN_SCALE_PIXELS = 1.0, 0.5, 36
 
 
 def q(series: pd.Series, p: float) -> float:
@@ -117,7 +129,48 @@ def aggregate_track(t: pd.DataFrame, width: int, height: int) -> dict:
         "abs_x_at_min_z": float(abs(t.x_center_m.iloc[int(np.argmin(t.z_m.to_numpy()))])),
         **world_trajectory(t),
         **flow_motion_summary(t),
+        **path_summary(t),
     }
+
+
+def own_motion_while_stopped(t: pd.DataFrame, fps: float) -> dict:
+    """What the vehicle itself does while the rider is stopped (at a light, a stop sign, in a queue).
+
+    A parked car and a car queued at a red light look the same while the rider moves past or toward them - both close
+    at the rider's speed - which made stopped traffic the most visible "parked" error at junctions. While the rider
+    waits the camera is still, so any image motion is the vehicle's: sideways from the body flow against the ground
+    beside it (v_lat_flow_mps), along the road from the expansion of the body flow times its distance. Queued traffic
+    moves off when the light changes, crossing and turning traffic moves throughout, a parked car does not move.
+    """
+    stopped = (t.ego_speed_mps < RIDER_STOPPED_MPS).fillna(False)
+    out = {"frac_rider_stopped": float(stopped.mean()), "stopped_obs": int(stopped.sum()),
+           "stopped_own_speed_med": float("nan"), "stopped_own_speed_p90": float("nan"),
+           "frac_stopped_own_moving": float("nan")}
+    s = t[stopped]
+    if len(s) < 3:
+        return out
+    lateral = s.v_lat_flow_mps if "v_lat_flow_mps" in s else pd.Series(np.nan, index=s.index)
+    expansion = (s.obj_scale * fps).where(s.obj_n >= MIN_SCALE_PIXELS) if "obj_scale" in s else pd.Series(np.nan, index=s.index)
+    along = (expansion * s.z_m).where(s.geom_ok)
+    speed = np.hypot(lateral.fillna(0.0), along.fillna(0.0)).where(lateral.notna() | along.notna())
+    # a few samples' median: single noisy flow readings must not count as moving
+    speed = speed.rolling(5, center=True, min_periods=2).median().dropna()
+    if len(speed) < 3:
+        return out
+    out.update(stopped_own_speed_med=float(speed.median()), stopped_own_speed_p90=float(speed.quantile(0.9)),
+               frac_stopped_own_moving=float((speed > OWN_MOVING_MPS).mean()))
+    return out
+
+
+def path_summary(t: pd.DataFrame) -> dict:
+    """How much of the track the vehicle spent straight ahead in the rider's path, and there while the rider was
+    stopped. A parked car is beside the path - the rider passes it - while a car queued at a light sits in it with the
+    rider waiting behind; both look equally static in the flow, which made stopped traffic the most visible "parked"
+    error in the overlays."""
+    ahead = (t.x_inner_m.abs() <= IN_PATH_M) & (t.z_m < IN_PATH_Z) & ~(t.trunc_left | t.trunc_right)
+    stopped = t.ego_speed_mps.fillna(np.inf) < STOPPED_MPS
+    return {"frac_in_path": float(ahead.mean()), "frac_in_path_rider_stopped": float((ahead & stopped).mean()),
+            "in_path_z_min": float(t.z_m[ahead].min()) if ahead.any() else float("nan")}
 
 
 def flow_motion_summary(t: pd.DataFrame) -> dict:
@@ -148,7 +201,29 @@ def flow_motion_summary(t: pd.DataFrame) -> dict:
     out["grid_n"] = int(proj.notna().sum())
     out["grid_proj_med"] = q(proj, 0.5)
     out["grid_proj_p10"] = q(proj, 0.1)
+    # The medians hide how consistent the evidence is: a parked car's samples sit near 1 most of the time, while a
+    # car crawling beside the rider or crossing far ahead gives a spread. Shares per band are steadier across rides.
+    ok_c, ok_g = closing.dropna(), proj.dropna()
+    out["frac_closing_static"] = float(ok_c.between(*CLOSING_STATIC).mean()) if len(ok_c) else float("nan")
+    out["frac_closing_with"] = float((ok_c < CLOSING_WITH).mean()) if len(ok_c) else float("nan")
+    out["frac_closing_against"] = float((ok_c > CLOSING_AGAINST).mean()) if len(ok_c) else float("nan")
+    out["frac_grid_static"] = float(ok_g.between(*GRID_STATIC).mean()) if len(ok_g) else float("nan")
+    out["frac_grid_with"] = float((ok_g < GRID_WITH).mean()) if len(ok_g) else float("nan")
+    out["frac_grid_against"] = float((ok_g > GRID_AGAINST).mean()) if len(ok_g) else float("nan")
     return out
+
+
+def kerb_context_features(context: pd.DataFrame) -> pd.DataFrame:
+    """Per track, from bikesafe.streetseg.vehicle_context on the sampled frames: how close to the kerb the vehicle
+    stood, how often another vehicle stood between it and the kerb, how much roadway lay on the rider's side, and how
+    much of the ground under it was not roadway."""
+    if context.empty:
+        return pd.DataFrame()
+    c = context.assign(kerb_close=(context.kerb_gap_m < KERB_CLOSE_M).astype(float))
+    return c.groupby("track_id").agg(
+        kerb_gap_med=("kerb_gap_m", "median"), frac_kerb_close=("kerb_close", "mean"),
+        frac_outer_vehicle=("outer_vehicle", "mean"), inner_road_med=("inner_road_m", "median"),
+        under_offroad_med=("under_offroad", "median"), n_context=("kerb_close", "size")).reset_index()
 
 
 def lane_relation_features(kin: pd.DataFrame, lanes: pd.DataFrame, bike_lane: pd.Series | None) -> pd.DataFrame:
@@ -351,7 +426,18 @@ def scene3d_features(scene3d: pd.DataFrame, ego: pd.DataFrame, source_fps: float
     return pd.DataFrame(rows)
 
 
-def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_deg: float | None = None) -> pd.DataFrame:
+def split_identities(dets: pd.DataFrame, perception_dir: Path, meta: dict, videos: Path) -> pd.DataFrame:
+    """The detections with each track cut where the tracker handed its id to another vehicle (bikesafe.identity);
+    the tracker's id stays in raw_track_id. Appearance descriptors are cached in the perception folder."""
+    tracked = (dets.track_id >= 0).to_numpy()
+    sub = dets[tracked].reset_index(drop=True)
+    desc = appearance_descriptors(resolve_video(meta, videos), sub, cache=perception_dir / APPEARANCE_CACHE)
+    rest = dets[~tracked].assign(raw_track_id=dets.track_id[~tracked])
+    return pd.concat([split_switches(sub, desc), rest], ignore_index=True)
+
+
+def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_deg: float | None = None,
+                  videos: Path = VIDEOS, identity_split: bool = False) -> pd.DataFrame:
     meta = read_json(perception_dir / "meta.json")
     stem = meta["stem"]
     out_dir = out_root / stem
@@ -359,6 +445,10 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
     dets = pd.read_parquet(perception_dir / "detections.parquet")
     calib = fit_horizon(dets, meta["width"], meta["height"], meta["processed_fps"], meta["stride"],
                         hfov_deg=DEFAULT_HFOV_DEG if hfov_deg is None else hfov_deg)
+    # opt-in: cut tracks where the tracker handed the id to another vehicle (bikesafe.identity) - it raised IDF1 on the
+    # reference sequence but lowered relation accuracy on the labels, so the tracker's ids are kept by default
+    dets = split_identities(dets, perception_dir, meta, videos) if identity_split else dets.assign(raw_track_id=dets.track_id)
+    id_map = dets.loc[dets.track_id >= 0, ["frame", "raw_track_id", "track_id"]]
     raw_ego = out_dir / "egomotion_raw.parquet"
     if raw_ego.exists():
         ego = ego_from_tracking(pd.read_parquet(raw_ego), calib)
@@ -386,14 +476,16 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
     scene = scene_probabilities(clip_path, meta["source_fps"], probe=scene_probe) if clip_path.exists() else None
     rows = []
     for _, t in kin.groupby("track_id", sort=True):
-        row = {"video": stem, "track_id": int(t.track_id.iloc[0]), **aggregate_track(t, calib.width, calib.height)}
+        row = {"video": stem, "track_id": int(t.track_id.iloc[0]), **aggregate_track(t, calib.width, calib.height),
+               **own_motion_while_stopped(t, calib.fps)}
         rows.append(row)
     tracks = pd.DataFrame(rows)
     if clip_path.exists():
-        tracks = tracks.merge(crop_scores(clip_path), on="track_id", how="left")
+        tracks = tracks.merge(crop_scores(clip_path, id_map), on="track_id", how="left")
     scene3d_path = out_dir / "scene3d.parquet"
     if scene3d_path.exists() and len(tracks):
-        depth_features = scene3d_features(pd.read_parquet(scene3d_path), ego, meta["source_fps"], calib.focal_px)
+        depth_features = scene3d_features(remap_ids(pd.read_parquet(scene3d_path), id_map), ego, meta["source_fps"],
+                                          calib.focal_px)
         if len(depth_features):
             tracks = tracks.merge(depth_features, on="track_id", how="left")
     lanes_path = out_dir / "lanes.parquet"
@@ -406,6 +498,11 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
         lane_features = lane_relation_features(kin, lanes, bike_lane)
         if len(lane_features):
             tracks = tracks.merge(lane_features, on="track_id", how="left")
+    context_path = out_dir / "vehicle_context.parquet"
+    if context_path.exists() and len(tracks):
+        context_features = kerb_context_features(remap_ids(pd.read_parquet(context_path), id_map))
+        if len(context_features):
+            tracks = tracks.merge(context_features, on="track_id", how="left")
     if scene is not None and len(tracks):
         mid = (tracks.t_start + tracks.t_end) / 2
         pos = np.clip(np.searchsorted(scene.time_s.to_numpy(), mid.to_numpy()), 0, len(scene) - 1)
@@ -427,7 +524,11 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
         scene.to_parquet(out_dir / "scene.parquet", index=False)
     write_json(out_dir / "calibration.json", {**calib.as_dict(), "start_local": meta.get("start_local"),
                                               "source_fps": meta["source_fps"], "features_version": FEATURES_VERSION,
-                                              "lane_features": lanes_path.exists()})
+                                              "lane_features": lanes_path.exists(),
+                                              "context_features": context_path.exists(),
+                                              "identity_split": identity_split,
+                                              "identity_split_pieces": int(dets.loc[dets.track_id != dets.raw_track_id,
+                                                                                    "track_id"].nunique())})
     return tracks
 
 
@@ -436,9 +537,13 @@ def main() -> None:
     parser.add_argument("perception_dirs", nargs="+", type=Path)
     parser.add_argument("--out", type=Path, default=ROOT / "work" / "analysis")
     parser.add_argument("--hfov-deg", type=float, default=None)
+    parser.add_argument("--videos", type=Path, default=VIDEOS, help="Ride videos (for the identity split)")
+    parser.add_argument("--identity-split", action="store_true",
+                        help="Cut tracks at identity transfers (bikesafe.identity; off by default, see its docstring)")
     args = parser.parse_args()
     for path in args.perception_dirs:
-        tracks = analyze_video(path, args.out, hfov_deg=args.hfov_deg)
+        tracks = analyze_video(path, args.out, hfov_deg=args.hfov_deg, videos=args.videos,
+                               identity_split=args.identity_split)
         print(path.name, len(tracks), "tracks")
         print(tracks.rule_relation.value_counts().to_string())
 
