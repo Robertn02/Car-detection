@@ -19,7 +19,8 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import ROOT, read_json
+from bikesafe.common import ROOT, VIDEOS, read_json
+from bikesafe.labels import align_track_labels, anchor_rows, append_anchors, load_anchors
 
 TILE_W, TILE_H = 640, 360
 
@@ -122,18 +123,27 @@ def video_tag(video: str) -> str:
     return video.rsplit("_", 1)[-1]
 
 
-def render_track_cards(analysis: Path, videos: Path, out: Path, per_video: int, seed: int, only: list[str] | None,
-                       labels_csv: Path | None = None, model: dict | None = None, per_sheet: int = 2) -> None:
+def card_offsets(labelled: pd.DataFrame, anchors: pd.DataFrame) -> dict[str, int]:
+    """Highest card number per video among labelled and already rendered cards, so a card id is never reused."""
+    cards = pd.concat([labelled[["video", "card_id"]], anchors[["video", "card_id"]]], ignore_index=True)
+    if cards.empty:
+        return {}
+    numbers = cards.card_id.str.split("_").str[1].astype(int)
+    return {str(v): int(n) for v, n in numbers.groupby(cards.video).max().items()}
+
+
+def render_track_cards(analysis: Path, perception: Path, videos: Path, out: Path, per_video: int, seed: int,
+                       only: list[str] | None, labels_csv: Path | None = None, model: dict | None = None,
+                       per_sheet: int = 2) -> None:
     out.mkdir(parents=True, exist_ok=True)
     paths = sorted(analysis.glob("*/tracks.parquet"))
     if only:
         paths = [p for p in paths if p.parent.name in only]
-    done: set[tuple[str, int]] = set()
-    offsets: dict[str, int] = {}
-    if labels_csv and labels_csv.exists():
-        labelled = pd.read_csv(labels_csv)
-        done = set(zip(labelled.video, labelled.track_id))
-        offsets = {str(v): int(g.card_id.str.split("_").str[1].astype(int).max()) for v, g in labelled.groupby("video")}
+    labelled = pd.read_csv(labels_csv) if labels_csv and labels_csv.exists() else pd.DataFrame(columns=["video", "card_id", "track_id"])
+    if len(labelled):
+        labelled = align_track_labels(labelled, perception, analysis=analysis)  # track ids of this run
+    done: set[tuple[str, int]] = set(zip(labelled.video, labelled.track_id))
+    offsets = card_offsets(labelled, load_anchors())
     sample = sample_tracks(pd.concat([pd.read_parquet(p) for p in paths]), per_video, seed, exclude=done, model=model)
     for video, chosen in sample.groupby("video", sort=True):
         tag = video_tag(str(video))
@@ -141,7 +151,7 @@ def render_track_cards(analysis: Path, videos: Path, out: Path, per_video: int, 
         meta = read_json(analysis / str(video) / "calibration.json")
         fps = meta["source_fps"]
         cap = cv2.VideoCapture(str(videos / f"{video}.mp4"))
-        rows, tiles, sheet_no = [], [], 0
+        rows, tiles, anchors, sheet_no = [], [], [], 0
         offset = offsets.get(str(video), 0)
         for card_no, row in enumerate(chosen.itertuples(), start=offset + 1):
             t = kin[kin.track_id == row.track_id].sort_values("frame")
@@ -151,6 +161,8 @@ def render_track_cards(analysis: Path, videos: Path, out: Path, per_video: int, 
             path = np.column_stack([t.u_c.to_numpy(), t.y2.to_numpy()])
             path = path[(t.frame >= first.frame).to_numpy() & (t.frame <= last.frame).to_numpy()]
             card_id = f"T{tag}_{card_no:03d}"
+            # the boxes shown on the card, so its label can follow the vehicle if perception is re-run (bikesafe.labels)
+            anchors += anchor_rows(card_id, str(video), t, [first.frame, middle.frame, last.frame, biggest.frame])
             tile_a = context_tile(read_frame(cap, first.frame), kin[kin.frame == first.frame], first, None)
             stamp(tile_a, f"{card_id} start t={first.time_s:.1f}s")
             tile_b = context_tile(read_frame(cap, middle.frame), kin[kin.frame == middle.frame], middle, None)
@@ -170,6 +182,7 @@ def render_track_cards(analysis: Path, videos: Path, out: Path, per_video: int, 
                 cv2.imwrite(str(out / f"tracks_{tag}_{offset + sheet_no:02d}.jpg"), np.vstack(tiles), [cv2.IMWRITE_JPEG_QUALITY, 88])
                 tiles = []
         cap.release()
+        append_anchors(anchors)
         manifest = out / f"track_cards_{tag}.csv"
         frame = pd.DataFrame(rows)
         if manifest.exists():
@@ -216,7 +229,7 @@ def main() -> None:
     parser.add_argument("kind", choices=["tracks", "scenes"])
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
     parser.add_argument("--perception", type=Path, default=ROOT / "work" / "perception")
-    parser.add_argument("--videos", type=Path, default=ROOT / "videos")
+    parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--out", type=Path, default=ROOT / "work" / "labeling")
     parser.add_argument("--per-video", type=int, default=60)
     parser.add_argument("--every-s", type=float, default=20.0)
@@ -229,7 +242,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.kind == "tracks":
         model = pickle.loads(args.balance_with_model.read_bytes()) if args.balance_with_model else None
-        render_track_cards(args.analysis, args.videos, args.out, args.per_video, args.seed, args.only, args.labels, model)
+        render_track_cards(args.analysis, args.perception, args.videos, args.out, args.per_video, args.seed, args.only,
+                           args.labels, model)
     else:
         render_scene_cards(args.perception, args.videos, args.out, args.every_s, args.only)
 

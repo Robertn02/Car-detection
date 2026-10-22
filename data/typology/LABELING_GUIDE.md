@@ -12,6 +12,11 @@ If the relation changes (for example a car pulls out of a parking space), use th
 | `parked` | parked | Parked at a curb, in a parking lane, a driveway or a lot; not part of traffic. Vehicles stopped in a traffic lane at a light are **not** parked. |
 | `cross_side` | not sharing | Not on the rider's own roadway: side roads and intersecting streets, traffic crossing or turning across the rider's path, driveways, and vehicles beyond a raised median or on another roadway (freeway, frontage road, overpass). |
 | `unclear` | excluded | Too small, dark, occluded, or the box switches between different vehicles. |
+| `not_vehicle` | excluded | Not a motor vehicle on the road network: sidewalk delivery robots, scooters and bicycles, wheelie bins, dumpsters, carts, benches. |
+
+A vehicle stopped in traffic - waiting at a red light or stop sign, queued behind another car, stopped to turn - is
+**not** parked: label it by where it is (`ego_lane`, `adjacent_same`, `oncoming`, `cross_side`). Parked means left at
+the kerb, in a parking lane, a driveway or a lot.
 
 Tips
 

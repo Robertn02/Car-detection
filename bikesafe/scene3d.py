@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from bikesafe.common import ROOT, is_cuda, open_video, read_json, resolve_video
+from bikesafe.common import ROOT, VIDEOS, is_cuda, open_video, read_json, resolve_video
 from bikesafe.geometry import CAR_HEIGHT_M, fit_horizon
 
 DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"
@@ -226,7 +226,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("perception_dirs", nargs="+", type=Path)
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
-    parser.add_argument("--videos", type=Path, default=ROOT / "videos")
+    parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--sample-fps", type=float, default=2.0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--fp32", action="store_true", help="Disable half precision for the depth model on the GPU")

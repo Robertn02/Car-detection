@@ -3,21 +3,27 @@
 Outputs per video in results/corpus/<video>/:
   tracks_typed.csv     one row per vehicle track with relation, group, confidence and key measurements
   timeline_1s.csv      per-second scene, ego speed, vehicles visible by relation, closest distances, and - when
-                       bikesafe.infrastructure has run - bike lane, signal state and signs in view (Strava-joinable)
+                       bikesafe.infrastructure has run - bike lane, signal state, the types of the signs in view and
+                       the posted speed limit (Strava-joinable)
   events.csv           overtakes, close ego-lane vehicles, near crossing traffic, close oncoming, emergency candidates,
                        stop signs passed and waits at red lights
-  signs.csv            one row per distinct traffic sign / signal head seen
+  signs.csv            one row per distinct traffic sign / signal head seen, with the sign's type and text
+  vehicles.csv         one row per physical vehicle: its relation in words and how sure the model is, when it was
+                       seen (local time), how close it came and on which side, its plate, and whether to check it -
+                       the table to read first (tracks_typed.csv holds every track and all ~130 model features)
 and results/corpus/corpus_summary.csv across videos.
 
 Counts are per physical vehicle: bikesafe.stitch merges the duplicate boxes the detector puts on one pickup or van
 (car + truck) and joins tracks the tracker split, and every vehicle gets one relation - the detection-weighted vote
 of its tracks. `tracks_<relation>` keeps the per-track count for comparison with earlier results; `per_min_*`,
-`vehicles_*`, the per-second counts and the events are per vehicle. When `bikesafe.plates read` has run, the summary
-also reports how the vehicle ids agree with the (hashed) plates.
+`vehicles_*`, the per-second counts and the events are per vehicle. When bikesafe.plates has run, every track carries
+its vehicle's plate (`plate`) and the summary reports how the vehicle ids agree with the plates.
 
-Riding context: CLIP separates paths from roads well but confuses painted bike lanes with shared roads (bike-lane F1
-0.49). Where the lane-paint detector has evidence, it decides bike lane vs shared road; CLIP keeps the separated-path
-call and fills seconds without paint evidence. The CLIP-only context is kept as `scene_clip`.
+Riding context: CLIP's (the reviewed-frame probe). CLIP separates paths from roads well but often takes a painted
+bike lane for a shared road (bike-lane F1 0.49). The lane-paint detector's call is reported beside it
+(`in_bike_lane`) but does not override it: on the 307 labelled frames, letting the paint decide bike lane vs shared
+road took accuracy from 0.886 to 0.50 (it called 136 of 232 shared-road frames bike lane - mostly the solid line of a
+parking lane or a wide kerb lane), and no combination tried, a learned one included, beat CLIP alone.
 
     python -m bikesafe.exposure
 """
@@ -32,9 +38,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import RELATION_GROUP, RELATIONS, ROOT, SCENES, read_json, write_json
+from bikesafe.common import (RELATION_GROUP, RELATION_TEXT, RELATIONS, ROOT, SCENES, VEHICLE_CLASS_TEXT, read_json,
+                              write_json)
 from bikesafe.infrastructure import object_instances, per_second_summary
-from bikesafe.plates import identity_audit
+from bikesafe.plates import identity_audit, plates_on_pieces, vehicle_plates
 from bikesafe.scene import scene_probabilities
 from bikesafe.tracks import rule_relation
 
@@ -42,9 +49,10 @@ MIN_VISIBLE_BOX_H = 20
 RELIABLE_Z_M = 15.0  # relations are validated within this range (results/typology/relation_accuracy_by_distance.csv)
 OVERTAKE_MAX_Z = 8.0  # metres; a passing vehicle is alongside the rider
 EMERGENCY_SHORTLIST = 10
-SEPARATED_PATH_KEEP = 0.5  # CLIP probability above which the separated-path call stands whatever the paint says
 RED_WAIT_MIN_S = 3  # a stop of at least this long with a red signal ahead counts as a wait at a red light
 MIN_SIGN_BOX_H = 18  # px; smaller sign detections are too far away to count as passed
+SIGN_SUMMARY = ["stop", "yield", "speed_limit", "bike", "parking", "pedestrian", "warning", "street_name", "bus_stop",
+                "roadwork"]
 
 
 def unknown_scene(n_seconds: int) -> pd.DataFrame:
@@ -105,28 +113,74 @@ def vehicle_relations(tracks: pd.DataFrame) -> pd.Series:
 
 def vehicle_table(tracks: pd.DataFrame) -> pd.DataFrame:
     """One row per vehicle: span, largest box, closest approach, number of tracks and its relation."""
-    table = tracks.groupby("vehicle_id").agg(
+    table = pd.DataFrame(tracks.groupby("vehicle_id").agg(
         t_start=("t_start", "min"), t_end=("t_end", "max"), box_h_max=("box_h_max", "max"), z_min=("z_min", "min"),
-        n_tracks=("track_id", "size"), relation=("vehicle_relation", "first"))
+        n_tracks=("track_id", "size"), relation=("vehicle_relation", "first")))
     table["duration_s"] = table.t_end - table.t_start
     return table
+
+
+CHECK_CONFIDENCE = 0.45  # below this vote share the relation is flagged for review (as the overlay's "?")
+
+
+def vehicle_summary(tracks: pd.DataFrame, start_local: str | None) -> pd.DataFrame:
+    """One row per physical vehicle, for people reading the results: what it was to the rider, how sure, when, how
+    close, and whether a person should check it. Confidence is the share of the detection-weighted class vote that
+    went to the relation (bikesafe.exposure.vehicle_relations)."""
+    t = tracks.copy()
+    proba = [f"proba_{r}" for r in RELATIONS if f"proba_{r}" in t]
+    if proba:
+        votes = t[proba].mul(t.n_det, axis=0).groupby(t.vehicle_id).sum()
+        confidence = votes.max(axis=1) / votes.sum(axis=1).replace(0, np.nan)
+    else:
+        confidence = pd.Series(np.nan, index=t.vehicle_id.unique())
+    weight = t.n_det.astype(float)
+    closest = t.loc[t.groupby("vehicle_id").z_min.idxmin()].set_index("vehicle_id")
+    g = t.groupby("vehicle_id")
+    out = pd.DataFrame({
+        "relation": g.vehicle_relation.first(),
+        "confidence": confidence.round(3),
+        "vehicle_class": g.class_id.agg(lambda c: VEHICLE_CLASS_TEXT.get(int(c.mode().iloc[0]), "vehicle")),
+        "t_start": g.t_start.min().round(2), "t_end": g.t_end.max().round(2),
+        "closest_m": g.z_min.min().round(1),
+        "lateral_at_closest_m": closest.x_inner_at_min_z.round(2),
+        "side": np.where(closest.x_at_min_z < 0, "left", "right"),
+        "box_h_max_px": g.box_h_max.max().round(0),
+        "n_tracks": g.size(),
+        "track_ids": g.track_id.agg(lambda ids: " ".join(str(int(i)) for i in sorted(ids))),
+    })
+    out.insert(1, "relation_text", out.relation.map(RELATION_TEXT))
+    out.insert(2, "group", out.relation.map(RELATION_GROUP))
+    out["duration_s"] = (out.t_end - out.t_start).round(2)
+    if "frac_rider_stopped" in t:  # share of its detections seen while the rider was stopped
+        out["seen_while_rider_stopped"] = (t.frac_rider_stopped * weight).groupby(t.vehicle_id).sum().div(
+            weight.groupby(t.vehicle_id).sum()).round(2)
+    if "not_vehicle" in t:
+        out["not_vehicle_score"] = (t.not_vehicle * weight).groupby(t.vehicle_id).sum().div(
+            weight.groupby(t.vehicle_id).sum()).round(2)
+    if "plate" in t:
+        out["plate"] = g.plate.first()
+    validated = (out.closest_m <= RELIABLE_Z_M) & (out.box_h_max_px >= 35) & (out.duration_s >= 1.0)
+    out["counted"] = validated
+    reasons = np.where(out.confidence < CHECK_CONFIDENCE, "model unsure", "")
+    if "not_vehicle_score" in out:
+        reasons = np.where(out.not_vehicle_score >= 0.5, np.char.add(reasons.astype(str), "; may not be a vehicle"), reasons)
+    out["check"] = pd.Series(reasons, index=out.index).str.strip("; ")
+    if start_local:
+        t0 = datetime.fromisoformat(start_local)
+        out.insert(out.columns.get_loc("t_start"), "time_local",
+                   [(t0 + timedelta(seconds=float(s))).isoformat(timespec="seconds") for s in out.t_start])
+    order = ["vehicle_id", "time_local", "t_start", "t_end", "duration_s", "relation_text", "relation", "group",
+             "confidence", "check", "counted", "vehicle_class", "closest_m", "lateral_at_closest_m", "side",
+             "seen_while_rider_stopped", "not_vehicle_score", "plate", "box_h_max_px", "n_tracks", "track_ids"]
+    out = out.reset_index().sort_values("t_start").reset_index(drop=True)
+    return pd.DataFrame(out[[c for c in order if c in out]])
 
 
 def counted(table: pd.DataFrame) -> pd.DataFrame:
     """Vehicles (or tracks) that came within the range where the relation is validated and lasted at least a second,
     so neither distant guesses nor brief fragments inflate the counts."""
-    return table[(table.box_h_max >= 35) & (table.duration_s >= 1.0) & (table.z_min <= RELIABLE_Z_M)]
-
-
-def fuse_scene(line: pd.DataFrame) -> pd.Series:
-    """Riding context per second: CLIP decides separated path, the lane-paint detector decides bike lane vs shared
-    road wherever it has evidence, and CLIP fills the rest."""
-    scene = line.scene_clip.copy()
-    separated = (line.p_separated_path >= SEPARATED_PATH_KEEP).fillna(False).to_numpy(bool)
-    in_lane = pd.to_numeric(line.in_bike_lane, errors="coerce").to_numpy(float)  # True 1, False 0, unknown NaN
-    scene[~separated & (in_lane == 1.0)] = "bike_lane"
-    scene[~separated & (in_lane == 0.0)] = "shared_road"
-    return scene
+    return pd.DataFrame(table[(table.box_h_max >= 35) & (table.duration_s >= 1.0) & (table.z_min <= RELIABLE_Z_M)])
 
 
 def timeline(kin: pd.DataFrame, tracks: pd.DataFrame, ego: pd.DataFrame, scene: pd.DataFrame, start_local: str | None,
@@ -149,9 +203,7 @@ def timeline(kin: pd.DataFrame, tracks: pd.DataFrame, ego: pd.DataFrame, scene: 
     known = probs.notna().any(axis=1)
     out.loc[known, "scene"] = probs[known].idxmax(axis=1).str.removeprefix("p_")
     if infra is not None:
-        out["scene_clip"] = out["scene"]
         out = out.join(infra, how="left")
-        out["scene"] = fuse_scene(out)
     counts = df.groupby(["second", "relation"]).vehicle_id.nunique().unstack(fill_value=0)
     for rel in RELATIONS:
         out[f"n_{rel}"] = counts[rel] if rel in counts else 0
@@ -254,7 +306,7 @@ def infrastructure_events(signs: pd.DataFrame, line: pd.DataFrame) -> pd.DataFra
 
 
 def summarise(video: str, tracks: pd.DataFrame, line: pd.DataFrame, ev: pd.DataFrame,
-              links: pd.DataFrame | None = None, audit: dict | None = None) -> dict:
+              links: pd.DataFrame | None = None, audit: dict | None = None, signs: pd.DataFrame | None = None) -> dict:
     """One row per video. Counts cover vehicles that came within the range where the relation is validated and that
     lasted at least a second (see `counted`); per_min_* are vehicles, tracks_* the per-track counts of earlier runs."""
     relevant = counted(tracks)
@@ -281,16 +333,21 @@ def summarise(video: str, tracks: pd.DataFrame, line: pd.DataFrame, ev: pd.DataF
     row["door_zone_seconds"] = int((line.door_zone_parked > 0).sum())
     overtakes = ev[ev.event == "overtaken_by_vehicle"] if len(ev) else ev
     row["median_overtake_clearance_m"] = round(float(overtakes.clearance_m.median()), 2) if len(overtakes) else float("nan")
-    if "in_bike_lane" in line:
-        in_lane = pd.to_numeric(line.in_bike_lane, errors="coerce")
-        row["minutes_in_painted_bike_lane"] = round(float((in_lane == 1).sum()) / 60, 2)
-        row["minutes_lane_paint_unknown"] = round(float(in_lane.isna().sum()) / 60, 2)
-        row["minutes_scene_changed_by_paint"] = round(float((line.scene != line.scene_clip).sum()) / 60, 2)
+    if "in_bike_lane" in line:  # the infrastructure pass ran (the paint call itself is not summarised: see above)
         waits = ev[ev.event == "red_light_wait"] if len(ev) else ev
+        if "speed_limit_posted" in line:
+            limit = pd.to_numeric(line.speed_limit_posted, errors="coerce")
+            row["posted_speed_limit_median"] = float(limit.median()) if limit.notna().any() else float("nan")
+            row["minutes_posted_limit_known"] = round(float(limit.notna().sum()) / 60, 2)
         row["events_stop_sign"] = int((ev.event == "stop_sign").sum()) if len(ev) else 0
         row["events_red_light_wait"] = int(len(waits))
         row["red_light_wait_seconds"] = int(waits.duration_s.sum()) if len(waits) else 0
         row["seconds_with_signal_ahead"] = int((line.n_signal_heads > 0).sum())
+    if signs is not None and len(signs):
+        passed = signs[(signs.kind == "sign") & (signs.box_h_max >= MIN_SIGN_BOX_H)]
+        row["signs_total"] = int(len(passed))
+        for category in SIGN_SUMMARY:
+            row[f"signs_{category}"] = int((passed.category == category).sum())
     return row
 
 
@@ -349,19 +406,22 @@ def main() -> None:
         links_path = analysis_dir / "vehicle_links.parquet"
         links = pd.read_parquet(links_path) if links_path.exists() else None
         audit = None
-        if (analysis_dir / "plates.parquet").exists():  # hashed plates stay in the analysis folder; counts only here
+        plates = pd.read_parquet(analysis_dir / "plates.parquet") if (analysis_dir / "plates.parquet").exists() else None
+        if plates is not None and "plate_text" in plates:  # tables from the earlier hashed audit carry no text
+            plates = plates_on_pieces(plates, kin)
             spans = kin.groupby("track_id").time_s.agg(t_start="min", t_end="max")
             vehicle_of = (kin.groupby("track_id").vehicle_id.first() if "vehicle_id" in kin
-                          else pd.Series(spans.index, index=spans.index))
-            plates = pd.read_parquet(analysis_dir / "plates.parquet")
-            audit = identity_audit(plates[plates.track_id.isin(spans.index)], vehicle_of.astype(int).to_dict(), spans)
+                          else pd.Series(spans.index, index=spans.index)).astype(int).to_dict()
+            audit = identity_audit(plates[plates.track_id.isin(spans.index)], vehicle_of, spans)
             write_json(out / "identity_audit.json", audit)
+            tracks["plate"] = tracks.vehicle_id.map(vehicle_plates(plates, vehicle_of))
         tracks.to_csv(out / "tracks_typed.csv", index=False)
+        vehicle_summary(tracks, calib.get("start_local")).to_csv(out / "vehicles.csv", index=False)
         line.to_csv(out / "timeline_1s.csv", index=False)
         ev.to_csv(out / "events.csv", index=False)
         if infra is not None:
             signs.to_csv(out / "signs.csv", index=False)
-        summaries.append(summarise(video, tracks, line, ev, links, audit))
+        summaries.append(summarise(video, tracks, line, ev, links, audit, signs if infra is not None else None))
         scene_rows.append(summarise_by_scene(video, tracks, line))
         print(video, tracks.relation.value_counts().to_dict())
     pd.DataFrame(summaries).to_csv(args.out / "corpus_summary.csv", index=False)

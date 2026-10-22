@@ -12,8 +12,16 @@ from pathlib import Path
 import cv2
 
 ROOT = Path(__file__).resolve().parents[1]
+# Hugging Face models (segmenter, CLIP, Florence-2, depth) live in the project's cache unless HF_HOME says otherwise,
+# so every stage, the CARC job and a fresh shell find the ~4 GB already downloaded (set before any import of
+# huggingface_hub, which reads it once).
+os.environ.setdefault("HF_HOME", str(ROOT / "_cache" / "hf"))
 # Set by `bikesafe.run --hw-decode` (or by hand) so every stage decodes with the GPU's video engine when it can.
 HW_DECODE_ENV = "BIKESAFE_HW_DECODE"
+# The ride videos: the project's videos/ folder, or wherever BIKESAFE_VIDEOS points - such as a Google Drive folder the
+# processed rides are archived in (G:/My Drive/bikesafe/videos through Google Drive for desktop). Every --videos
+# option defaults to it.
+VIDEOS = Path(os.environ.get("BIKESAFE_VIDEOS", ROOT / "videos"))
 VEHICLE_CLASSES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 # Fine-grained relation of a vehicle to the rider, and the professor's four reporting groups.
@@ -26,6 +34,12 @@ RELATION_GROUP = {
     # side streets, crossing or turning traffic, and anything on another roadway (across a median, frontage road)
     "cross_side": "not_sharing",
 }
+# How the relations read in tables and on the overlay
+RELATION_TEXT = {
+    "ego_lane": "in my lane", "adjacent_same": "other lane, same way", "oncoming": "oncoming",
+    "parked": "parked", "cross_side": "side road / other roadway",
+}
+VEHICLE_CLASS_TEXT = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 RELATION_COLOURS_BGR = {
     "ego_lane": (40, 40, 235),
     "adjacent_same": (0, 150, 255),
@@ -80,6 +94,43 @@ def open_video(path: Path, hw: bool | None = None) -> cv2.VideoCapture:
     return cv2.VideoCapture(str(path))
 
 
+class VideoOut:
+    """Writes BGR frames to an .mp4 as H.264 (libx264 from the ffmpeg bundled with imageio-ffmpeg), or as OpenCV's
+    MPEG-4 when imageio-ffmpeg is not installed.
+
+    On 12 fps overlay clips H.264 at CRF 20 is as sharp as OpenCV's MPEG-4 (PSNR 35.8 vs 35.7 dB, banner text 38.4 vs
+    37.8 dB) at 70% of the size and, unlike it, plays in browsers and slide software. Frames are piped to ffmpeg as
+    raw pixels, so each clip is encoded once.
+    """
+
+    def __init__(self, path: Path, fps: float, size: tuple[int, int], crf: int = 20):
+        self.path = path
+        try:
+            import imageio_ffmpeg
+        except ImportError:
+            self._ffmpeg = None
+            self._opencv = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+            if not self._opencv.isOpened():
+                raise SystemExit(f"Could not create {path}")
+            return
+        self._ffmpeg = imageio_ffmpeg.write_frames(
+            str(path), size, pix_fmt_in="bgr24", fps=fps, codec="libx264", quality=None, macro_block_size=2,
+            output_params=["-crf", str(crf), "-preset", "medium", "-movflags", "+faststart"])
+        self._ffmpeg.send(None)
+
+    def write(self, frame) -> None:
+        if self._ffmpeg is None:
+            self._opencv.write(frame)
+        else:
+            self._ffmpeg.send(frame)
+
+    def release(self) -> None:
+        if self._ffmpeg is None:
+            self._opencv.release()
+        else:
+            self._ffmpeg.close()
+
+
 def is_cuda(device: str) -> bool:
     device = str(device)
     return device.startswith("cuda") or device.isdigit()
@@ -90,7 +141,7 @@ def fp16_kwargs(device: str) -> dict:
     accepts (newer releases replaced `half=True` with `quantize=16`). Empty on CPU."""
     if not is_cuda(device):
         return {}
-    from ultralytics.cfg import DEFAULT_CFG_DICT
+    from ultralytics.cfg import DEFAULT_CFG_DICT  # pyright: ignore[reportPrivateImportUsage]  (not in __all__)
 
     return {"quantize": 16} if "quantize" in DEFAULT_CFG_DICT else {"half": True}
 

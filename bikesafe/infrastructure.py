@@ -1,41 +1,55 @@
 """Road infrastructure seen from the bike: traffic lights, traffic signs and painted bike lanes.
 
-A sampled-frame pass (default 2 fps, like the depth pass). Every sample is looked at twice:
+A sampled-frame pass (default 2 fps, like the depth pass). Every sample is looked at three ways:
 
-* **The camera image**, for lights and signs. An open-vocabulary detector (YOLOE-26 from ultralytics) is given a
-  road-furniture vocabulary - traffic light, stop / yield / speed-limit / street-name / warning signs and so on - plus
-  distractor classes (billboard, shop sign, licence plate, street lamp) that absorb look-alikes instead of letting them
-  be forced into a sign class. A lit lamp's colour gives each signal head's state. The prompts' text features are
-  cached in models/infrastructure_vocab.npz, so the text encoder is only needed to change the vocabulary.
+* **Street-scene segmentation** (bikesafe.streetseg: Mask2Former trained on Mapillary Vistas, an open model for
+  street-level images) gives the traffic signs facing the rider, the painted lane markings and crosswalks, and the
+  bike-lane surface. Each physical sign is then read (bikesafe.signs): CLIP types it - stop, speed limit, parking,
+  bike lane, street name, ... - and Florence-2 reads its text ("SPEED LIMIT 35", "Hoover St"), which also gives the
+  posted speed limit. The open-vocabulary detector used before found sign boxes but could not type them (almost
+  every sign came out as "other sign") and also boxed shop signs and billboards; the segmenter keeps those apart.
+* **An open-vocabulary detector** (YOLOE-26 from ultralytics) with a road-furniture vocabulary for traffic lights,
+  plus distractor classes (billboard, shop sign, licence plate, street lamp) that absorb look-alikes. A lit lamp's
+  colour gives each signal head's state. The prompts' text features are cached in models/infrastructure_vocab.npz, so
+  the text encoder is only needed to change the vocabulary. Without the segmenter (--seg-model none) its sign classes
+  are used as before.
 * **A bird's-eye view of the road ahead**, warped with the same self-calibrated flat-road geometry the rest of the
   pipeline uses (bikesafe.geometry). In it lane lines run vertically and painted stencils look like upright icons,
   which the detector recognises far better than their foreshortened originals. It gives
-    - every longitudinal paint line within 4.5 m of the rider's path: where it is, solid or broken, white or yellow,
+    - every longitudinal paint line within 4.5 m of the rider's path: where it is, how far ahead it was seen, solid or
+      broken, white or yellow (paint pixels from the segmenter's lane-marking class; a brightness filter without it),
     - bicycle stencils and their position relative to the rider,
-    - the share of green paint in the rider's corridor.
+    - the share of green paint, of bike-lane surface and of crosswalk in the rider's corridor.
   A painted bike lane shows up as a solid white line 0.3-2.4 m to the rider's left (broken near junctions), as a
-  narrow lane between two lines, or as a stencil in the rider's path. Junctions interrupt the paint, so the per-sample
-  evidence is smoothed over several seconds (per_second_summary).
+  narrow lane between two lines, as bike-lane surface or a stencil in the rider's path. Junctions interrupt the
+  paint, so the per-sample evidence is smoothed over several seconds (per_second_summary).
 
 Outputs in work/analysis/<video>/:
-  infrastructure.parquet  one row per light / sign / stencil detection per sample, linked into object tracks
-  lanes.parquet           one row per sample: lines found, the rider's lane edges, stencil and green-paint evidence
+  infrastructure.parquet  one row per light / sign / stencil detection per sample, linked into object tracks; signs
+                          carry their type, text and posted speed limit
+  lanes.parquet           one row per sample: lines found, the rider's lane edges, stencil and paint evidence
 
-    python -m bikesafe.infrastructure work/perception/VID_... [--sample-fps 2] [--model models/yoloe-26l-seg.pt]
+    python -m bikesafe.infrastructure work/perception/VID_... [--sample-fps 2] [--start-s 440 --duration-s 60]
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import pickle
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import ROOT, fp16_kwargs, is_cuda, open_video, read_json, resolve_video
+from bikesafe.common import ROOT, VIDEOS, fp16_kwargs, is_cuda, open_video, read_json, resolve_video, write_json
 from bikesafe.geometry import Calibration, ego_from_tracking, fit_horizon
+from bikesafe.signs import OCR_MODEL, free_gpu, sign_crop, typing_fingerprint
+from bikesafe.streetseg import (BIKE_LANE, CONTEXT_COLUMNS, CROSSWALK_MARKING, CROSSWALK_PLAIN, LANE_MARKING, SEG_HEIGHT,
+                                VISTAS_MODEL, full_resolution, sign_boxes, vehicle_context)
 
 # large: the medium model misses faint bicycle stencils in the bird's-eye view (demo clip: 0/3 vs 3/3 found)
 DEFAULT_MODEL = str(ROOT / "models" / "yoloe-26l-seg.pt")  # downloaded there by ultralytics on first use
@@ -90,12 +104,33 @@ YELLOW_HUE, YELLOW_MIN_SAT = (8, 32), 32  # OpenCV HLS
 MAX_LINE_WIDTH, MIN_STROKE_LENGTH = 0.35, 0.5  # metres; lane lines are 0.1-0.3 m wide, dashes ~3 m long
 CORRIDOR_X = 1.4  # half-width of the rider's own path for stencils and green paint (m)
 JUNCTION_LINES = 6  # this many lines at once is a crosswalk or a junction's paint, not lane structure
+JUNCTION_CROSSWALK = 0.12  # share of the rider's corridor that is crosswalk: a junction, not lane structure
+BIKE_LANE_SURFACE = 0.25  # share of the rider's corridor the segmenter calls bike lane
+MIN_SIGN_H = 12  # px; sign detections smaller than this are not kept or read
+SIGN_CROPS = "sign_crops.parquet"  # the crop of every sign detection, kept so the signs can be read again
+SIGN_FEATURES = "sign_clip.npz"  # their CLIP image features, so they can be typed again without the image model
+# A full ride takes hours on a small GPU: the pass saves its progress every CHECKPOINT_SAMPLES samples and resumes from
+# there when started again with the same settings.
+CHECKPOINT, CHECKPOINT_SAMPLES, CHECKPOINT_VERSION = "infrastructure.partial.pkl", 100, 1
+# What a finished pass covered: a window (--start-s / --duration-s) is never taken for the whole ride
+COVERAGE = "infrastructure.json"
+
+
+def pass_complete(analysis_dir: Path) -> bool:
+    """True when the pass in this analysis folder covered the whole processed ride (not only a window)."""
+    path = analysis_dir / COVERAGE
+    return path.exists() and bool(read_json(path).get("complete")) and (analysis_dir / "lanes.parquet").exists()
 
 # Lamp colour ranges in OpenCV hue (0-180). Lit reds read pink-magenta on this camera, LED greens cyan-green.
 LAMP_HUES = {"red": [(0, 12), (140, 180)], "yellow": [(13, 35)], "green": [(40, 95)]}
 
 # Per-second bike-lane decision: evidence averaged over a centred window, held through junctions without paint.
 BIKE_LANE_WINDOW_S, BIKE_LANE_HOLD_S, BIKE_LANE_THRESHOLD = 7, 6, 0.35
+# A posted speed limit holds until the next speed-limit sign, but at most this long: without a map the pipeline cannot
+# tell when the rider turned onto another street.
+SPEED_LIMIT_HOLD_S = 180
+OBJECT_COLUMNS = ["frame", "time_s", "category", "kind", "conf", "x1", "y1", "x2", "y2", "light_state", "state_share",
+                  "ground_x", "ground_z", "stop_confirmed"]
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -133,7 +168,7 @@ class InfrastructureDetector:
         self.model = YOLOE(weights)
         self.prompts = list(vocabulary)
         raw = text_features(self.model, self.prompts)
-        head = self.model.model.model[-1]
+        head = cast(Any, self.model.model).model[-1]
         with torch.inference_mode():
             embeddings = head.get_tpe(raw.to(next(head.parameters()).dtype))
         self.model.set_classes(self.prompts, embeddings)
@@ -143,34 +178,40 @@ class InfrastructureDetector:
         self.precision = fp16_kwargs(device) if half else {}
         self.verifier, self.verifier_weights = None, verifier_weights
 
-    def confirm_stop_signs(self, image: np.ndarray, detections: list[dict], imgsz: int) -> None:
-        """Keep the "stop" category only where a COCO-trained detector also sees a stop sign (IoU >= 0.3).
+    def stop_sign_boxes(self, image: np.ndarray, imgsz: int) -> list[np.ndarray]:
+        """Stop signs found by a COCO-trained detector (class "stop sign").
 
         The open vocabulary calls DO NOT ENTER, NO PARKING and red shop signs "stop sign" too (10 of 12 on the demo
         clips); COCO's stop-sign class rejected all of those and kept the real one facing the rider. Side-on stop signs
         for cross traffic are mostly dropped as well, which is what "stop signs the rider passed" should count.
-        Unconfirmed candidates stay in the data as generic signs.
         """
-        candidates = [d for d in detections if d["category"] == "stop"]
-        if not candidates:
-            return
         if self.verifier is None:
             from ultralytics import YOLO
 
             self.verifier = YOLO(self.verifier_weights)
-        result = self.verifier.predict(image, imgsz=imgsz, conf=STOP_CONFIRM_CONF, classes=[COCO_STOP_SIGN],
-                                       device=self.device, verbose=False, **self.precision)[0]
-        confirmed = result.boxes.xyxy.tolist() if result.boxes is not None else []
-        for d in candidates:
+        result = cast(list, self.verifier.predict(image, imgsz=imgsz, conf=STOP_CONFIRM_CONF, classes=[COCO_STOP_SIGN],
+                                                  device=self.device, verbose=False, **self.precision))[0]
+        return [np.array(c) for c in result.boxes.xyxy.tolist()] if result.boxes is not None else []
+
+    def confirm_stop_signs(self, image: np.ndarray, detections: list[dict], imgsz: int) -> None:
+        """Mark each sign that overlaps a COCO stop sign (`stop_confirmed`). Open-vocabulary "stop" candidates that are
+        not confirmed stay in the data as generic signs."""
+        if not any(d["kind"] == "sign" for d in detections):
+            return
+        confirmed = self.stop_sign_boxes(image, imgsz)
+        for d in detections:
+            if d["kind"] != "sign":
+                continue
             box = np.array([d["x1"], d["y1"], d["x2"], d["y2"]])
-            d["stop_confirmed"] = any(_iou(box, np.array(c)) >= 0.3 for c in confirmed)
-            if not d["stop_confirmed"]:
+            # a segmented sign blob can include the plate below the stop sign, so overlap is measured on the COCO box
+            d["stop_confirmed"] = any(_overlap(c, box) >= 0.5 for c in confirmed)
+            if d["category"] == "stop" and not d["stop_confirmed"]:
                 d["category"] = "other_sign"
 
     def __call__(self, image: np.ndarray, imgsz: int, kinds: tuple[str, ...]) -> list[dict]:
         conf = min(MIN_CONF[k] for k in kinds)
-        result = self.model.predict(image, imgsz=imgsz, conf=conf, device=self.device, verbose=False,
-                                    **self.precision)[0]
+        result = cast(list, self.model.predict(image, imgsz=imgsz, conf=conf, device=self.device, verbose=False,
+                                               **self.precision))[0]
         found = []
         boxes = result.boxes
         if boxes is None or not len(boxes):
@@ -255,23 +296,28 @@ def road_mask(shape: tuple[int, int], horizon: float, boxes: np.ndarray) -> np.n
     return mask
 
 
-def bev_paint(bev: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def bev_paint(bev: np.ndarray, valid: np.ndarray, marking: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """White and yellow lane paint in the bird's-eye view.
 
-    Paint is brighter than the asphalt beside it (lines run vertically here, so a wide horizontal opening estimates
-    the local background), and it is a thin stroke along the road. Wider bright regions - kerb and gutter concrete,
-    crosswalk bars, car bodies, sunlit patches - and short specks from cracks and shadow edges are removed.
+    With the segmenter's lane-marking mask (`marking`, bird's-eye view) the paint is those pixels: cracks, kerbs,
+    shadow edges and sunlit asphalt are already left out, and so are crosswalk bars, which the segmenter labels
+    separately. Without it, paint is what is brighter than the asphalt beside it (lines run vertically here, so a wide
+    horizontal opening estimates the local background). Either way only thin strokes along the road count: wider
+    regions - kerb and gutter concrete, stop bars, stencils, car bodies - and short specks are removed.
     """
     hls = cv2.cvtColor(bev, cv2.COLOR_BGR2HLS)
     hue, lightness, saturation = hls[..., 0], hls[..., 1], hls[..., 2]
-    blurred = cv2.GaussianBlur(lightness, (0, 0), 1.5)
-    background = cv2.morphologyEx(blurred, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (31, 1)))
-    contrast = cv2.subtract(blurred, background)
     # Faded yellow centre lines on this footage sit at hue ~15-17 with saturation ~35-70, while white paint in low sun
     # takes a warm hue but stays below ~30, so saturation splits them; bright white stays white.
     yellowish = (hue >= YELLOW_HUE[0]) & (hue <= YELLOW_HUE[1]) & (saturation >= YELLOW_MIN_SAT)
-    yellow = valid & (contrast > PAINT_CONTRAST[1]) & yellowish
-    white = valid & (contrast > PAINT_CONTRAST[0]) & ~yellowish
+    if marking is not None:
+        white, yellow = valid & marking & ~yellowish, valid & marking & yellowish
+    else:
+        blurred = cv2.GaussianBlur(lightness, (0, 0), 1.5)
+        background = cv2.morphologyEx(blurred, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (31, 1)))
+        contrast = cv2.subtract(blurred, background)
+        yellow = valid & (contrast > PAINT_CONTRAST[1]) & yellowish
+        white = valid & (contrast > PAINT_CONTRAST[0]) & ~yellowish
     paint = (white | yellow).astype(np.uint8)
     wide_px = int(round(MAX_LINE_WIDTH / BEV_RES)) + 1
     wide = cv2.morphologyEx(paint, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (wide_px, 1)))
@@ -342,6 +388,7 @@ def lane_lines(white: np.ndarray, yellow: np.ndarray, valid: np.ndarray, zs: np.
         cells = [(z, c) for z, c in cells if 0 <= c < n_xb]
         painted = sum(paint_count[z, c] for z, c in cells)
         yellow_px = sum(yellow_count[z, c] for z, c in cells)
+        painted_z = z_centres[sorted({z for z, c in cells if paint_count[z, c] > 0})]
         for z, c in cells:
             remaining[z, c] = False
         visible_m = float(n_visible[k, i] * Z_BIN)
@@ -349,6 +396,9 @@ def lane_lines(white: np.ndarray, yellow: np.ndarray, valid: np.ndarray, zs: np.
             "x": float(BEV_X[0] + (i + 0.5) * X_BIN), "shear": float(SHEARS[k]), "cover": float(cover[k, i]),
             "visible_m": visible_m, "solid": bool(cover[k, i] >= SOLID_COVER and visible_m >= MIN_SOLID_M),
             "yellow": float(yellow_px / painted) if painted else 0.0,
+            # how far ahead paint was seen along the line, for drawing it no further than it was observed
+            "z_near": float(painted_z.min()) if len(painted_z) else float(BEV_Z[0]),
+            "z_far": float(painted_z.max()) if len(painted_z) else float(LINE_Z_MAX),
         })
     return sorted(lines, key=lambda line: line["x"])
 
@@ -366,6 +416,17 @@ def green_share(bev: np.ndarray, valid: np.ndarray, view: GroundView) -> float:
     return float((green & ok).sum() / ok.sum())
 
 
+def surface_share(labels: np.ndarray, valid: np.ndarray, view: GroundView, classes: tuple[int, ...]) -> float:
+    """Share of the rider's corridor (|X| <= CORRIDOR_X, 2.5-10 m ahead) that the segmenter labels as `classes`."""
+    cols = np.abs(view.xs) <= CORRIDOR_X
+    rows = view.zs <= 10.0
+    region = labels[np.ix_(rows, cols)]
+    ok = valid[np.ix_(rows, cols)]
+    if ok.sum() < 200:
+        return float("nan")
+    return float((np.isin(region, classes) & ok).sum() / ok.sum())
+
+
 def vehicles_on_ground(boxes: np.ndarray, calib: Calibration, u_foe: float) -> tuple[np.ndarray, np.ndarray]:
     """Near-side lateral offset and depth of each vehicle whose wheels are visible (flat-road geometry)."""
     if not len(boxes):
@@ -380,7 +441,7 @@ def vehicles_on_ground(boxes: np.ndarray, calib: Calibration, u_foe: float) -> t
 
 
 def lane_record(lines: list[dict], stencils: list[dict], green: float, vehicle_x: np.ndarray,
-                vehicle_z: np.ndarray) -> dict:
+                vehicle_z: np.ndarray, bike_surface: float = float("nan"), crosswalk: float = float("nan")) -> dict:
     """The rider's lane from the lines beside it, plus the other bike-lane cues, as one row."""
     left = [line for line in lines if line["x"] <= -0.3]
     right = [line for line in lines if line["x"] >= 0.3]
@@ -410,8 +471,12 @@ def lane_record(lines: list[dict], stencils: list[dict], green: float, vehicle_x
         "stencil_x": stencil["x"] if stencil else nan,
         "stencil_z": stencil["z"] if stencil else nan,
         "green_share": green,
-        # every line as x:solid:yellow:shear, x at REF_Z metres ahead and shear its lateral drift per metre
+        "bike_lane_surface": bike_surface,
+        "crosswalk_share": crosswalk,
+        # every line as x:solid:yellow:shear:z_near:z_far, x at REF_Z metres ahead, shear its lateral drift per metre
+        # and z_near-z_far the stretch ahead in which its paint was seen
         "lines_json": ";".join(f"{line['x']:.2f}:{int(line['solid'])}:{line['yellow']:.2f}:{line['shear']:.3f}"
+                               f":{line.get('z_near', BEV_Z[0]):.1f}:{line.get('z_far', LINE_Z_MAX):.1f}"
                                for line in lines),
     }
     record["bike_lane_evidence"] = bike_lane_evidence(record)
@@ -426,11 +491,13 @@ def bike_lane_evidence(r: dict) -> float:
     same-direction traffic lanes US lines are broken, so a solid white line that close is a bike-lane or edge line;
     otherwise a narrow lane (1.0-2.8 m) between two lines with one solid (+0.6); a broken white line on the left with
     cars close on the right (+0.3: bike lanes turn broken before junctions, but so do traffic lanes); green paint
-    (+0.5). Against: the rider between two well-painted lines 3 m or more apart with no solid line beside it - a
-    traffic lane (-0.7); a yellow centre line on the left with no white line in between (-0.5). Something bright on the
-    right (gutter, kerb, car doors) never vetoes a solid line on the left.
+    (+0.5); bike-lane surface in the corridor according to the segmenter (+0.6). Against: the rider between two
+    well-painted lines 3 m or more apart with no solid line beside it - a traffic lane (-0.7); a yellow centre line on
+    the left with no white line in between (-0.5). Something bright on the right (gutter, kerb, car doors) never vetoes
+    a solid line on the left. A crosswalk in the corridor makes the sample uninformative, like a junction's paint.
     """
-    if r["n_lines"] >= JUNCTION_LINES and r["stencil_conf"] <= 0:
+    junction = r["n_lines"] >= JUNCTION_LINES or r.get("crosswalk_share", 0.0) >= JUNCTION_CROSSWALK
+    if junction and r["stencil_conf"] <= 0:
         return float("nan")
     left, width = r["left_x"], r["lane_width"]
     left_near = np.isfinite(left) and -2.4 <= left
@@ -453,6 +520,9 @@ def bike_lane_evidence(r: dict) -> float:
         informative = True
     if np.isfinite(r["green_share"]) and r["green_share"] >= 0.15:
         evidence += 0.5
+        informative = True
+    if r.get("bike_lane_surface", 0.0) >= BIKE_LANE_SURFACE:
+        evidence += 0.6
         informative = True
     well_painted = min(r["left_cover"], r["right_cover"]) >= 0.3 if np.isfinite(width) else False
     if np.isfinite(width) and width >= 3.0 and well_painted and not solid_white_left:
@@ -479,7 +549,8 @@ def link_objects(objects: pd.DataFrame, u_foe: dict[int, float], horizon: float,
     ids = pd.Series(-1, index=objects.index, dtype=int)
     if objects.empty:
         return ids
-    scales = np.array([0.95, 1.0, 1.1, 1.25, 1.45, 1.7])
+    # up to 2.2x between samples: a sign passed at 6 m/s doubles its size within half a second at close range
+    scales = np.array([0.95, 1.0, 1.1, 1.25, 1.45, 1.7, 1.95, 2.2])
     next_id = 0
     frames = sorted(objects.frame.unique())
     frame_pos = {f: i for i, f in enumerate(frames)}
@@ -525,6 +596,14 @@ def link_objects(objects: pd.DataFrame, u_foe: dict[int, float], horizon: float,
     return ids
 
 
+def _overlap(a: np.ndarray, b: np.ndarray) -> float:
+    """Share of box a inside box b."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    area = (a[2] - a[0]) * (a[3] - a[1])
+    return float(ix * iy / area) if area > 0 else 0.0
+
+
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
     ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -545,6 +624,16 @@ def parse_lines(lines_json: str) -> list[tuple[float, bool, float, float]]:
         if len(parts) >= 3 and parts[0]:
             shear = float(parts[3]) if len(parts) > 3 else 0.0
             out.append((float(parts[0]), bool(int(parts[1])), float(parts[2]), shear))
+    return out
+
+
+def line_extents(lines_json: str) -> list[tuple[float, float]]:
+    """(z_near, z_far) metres ahead in which each line's paint was seen; the full judged range for older tables."""
+    out = []
+    for item in str(lines_json).split(";"):
+        parts = item.split(":")
+        if len(parts) >= 3 and parts[0]:
+            out.append((float(parts[4]), float(parts[5])) if len(parts) >= 6 else (BEV_Z[0], LINE_Z_MAX))
     return out
 
 
@@ -587,30 +676,43 @@ def per_second_summary(lanes: pd.DataFrame, objects: pd.DataFrame, n_seconds: in
         out["n_signs"] = signs.groupby("second").object_id.nunique().reindex(out.index).fillna(0).astype(int)
         out["stop_sign"] = (signs[signs.category == "stop"].groupby("second").size().reindex(out.index).fillna(0) > 0)
         out["bike_stencil"] = (obj[obj.category == "bike_stencil"].groupby("second").size().reindex(out.index).fillna(0) > 0)
+        out["signs_in_view"] = (signs.groupby("second").category.agg(lambda c: "/".join(sorted(set(c))))
+                                .reindex(out.index).fillna(""))
+        limits = signs.dropna(subset=["speed_limit"]) if "speed_limit" in signs else signs.iloc[:0]
+        posted = limits.groupby("second").speed_limit.max().reindex(out.index)
+        out["speed_limit_posted"] = posted.ffill(limit=SPEED_LIMIT_HOLD_S)
     else:
         out["traffic_light_state"] = np.nan
         out["n_signal_heads"] = 0
         out["n_signs"] = 0
         out["stop_sign"] = False
         out["bike_stencil"] = False
+        out["signs_in_view"] = ""
+        out["speed_limit_posted"] = np.nan
     return out
 
 
 def object_instances(objects: pd.DataFrame) -> pd.DataFrame:
-    """One row per distinct sign / signal head: category, first and last time seen, best confidence, lamp states."""
+    """One row per distinct sign / signal head: category, first and last time seen, best confidence, lamp states, and
+    for signs what they say and the posted speed limit."""
+    columns = ["object_id", "kind", "category", "t_first", "t_last", "n_samples", "conf_max", "box_h_max", "states",
+               "sign_text", "speed_limit"]
     if objects.empty:
-        return pd.DataFrame(columns=["object_id", "kind", "category", "t_first", "t_last", "n_samples", "conf_max",
-                                     "box_h_max", "states"])
+        return pd.DataFrame(columns=columns)
     rows = []
     for object_id, g in objects.groupby("object_id"):
         # a stop sign confirmed by the COCO check in any sample is a stop sign; otherwise the majority name
         category = "stop" if (g.category == "stop").any() else g.category.mode().iloc[0]
         states = g.light_state[g.light_state.isin(["red", "yellow", "green"])]
+        text = g.sign_text.dropna() if "sign_text" in g else pd.Series(dtype=object)
+        limit = g.speed_limit.dropna() if "speed_limit" in g else pd.Series(dtype=float)
         rows.append({"object_id": int(object_id), "kind": g.kind.iloc[0], "category": category,
                      "t_first": float(g.time_s.min()), "t_last": float(g.time_s.max()), "n_samples": int(len(g)),
                      "conf_max": float(g.conf.max()), "box_h_max": float((g.y2 - g.y1).max()),
-                     "states": "/".join(dict.fromkeys(states)) if len(states) else ""})
-    return pd.DataFrame(rows)
+                     "states": "/".join(dict.fromkeys(states)) if len(states) else "",
+                     "sign_text": text.iloc[0] if len(text) else "",
+                     "speed_limit": float(limit.iloc[0]) if len(limit) else np.nan})
+    return pd.DataFrame(rows, columns=columns)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -626,8 +728,29 @@ def load_ego_foe(analysis_dir: Path, calib: Calibration) -> dict[int, float]:
     return dict(zip(ego.frame.astype(int), ego.u_foe.astype(float)))
 
 
+def save_checkpoint(path: Path, state: dict) -> None:
+    """Write the pass's progress atomically (a crash while writing leaves the previous checkpoint intact)."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL))
+    os.replace(tmp, path)
+
+
+def load_checkpoint(path: Path, settings: dict) -> dict | None:
+    """The saved progress of a pass with exactly these settings, or None."""
+    if not path.exists():
+        return None
+    try:
+        state = pickle.loads(path.read_bytes())
+    except (pickle.UnpicklingError, EOFError, AttributeError):
+        return None
+    return state if state.get("settings") == settings else None
+
+
 def run(perception_dir: Path, analysis_root: Path, videos: Path, sample_fps: float, device: str, weights: str,
-        imgsz: int, bev_imgsz: int, verifier: str = STOP_VERIFIER) -> tuple[Path, Path]:
+        imgsz: int, bev_imgsz: int, verifier: str = STOP_VERIFIER, fp16: bool = True, seg_model: str | None = VISTAS_MODEL,
+        seg_height: int = SEG_HEIGHT, read_signs: bool = True, ocr_model: str | None = OCR_MODEL,
+        start_s: float | None = None,
+        duration_s: float | None = None) -> tuple[Path, Path]:
     meta = read_json(perception_dir / "meta.json")
     dets = pd.read_parquet(perception_dir / "detections.parquet")
     calib = fit_horizon(dets, meta["width"], meta["height"], meta["processed_fps"], meta["stride"])
@@ -635,19 +758,42 @@ def run(perception_dir: Path, analysis_root: Path, videos: Path, sample_fps: flo
     out_dir.mkdir(parents=True, exist_ok=True)
     foe = load_ego_foe(out_dir, calib)
     boxes_by_frame = {int(f): g[["x1", "y1", "x2", "y2"]].to_numpy() for f, g in dets.groupby("frame")}
+    tracked_by_frame = {int(f): g for f, g in dets[dets.track_id >= 0].groupby("frame")}
     stride = meta["stride"]
     step = max(stride, int(round(meta["source_fps"] / sample_fps / stride)) * stride)
+    first, end = meta["start_frame"], meta["end_frame"]
+    if start_s is not None:  # a window of the ride, on the same sample grid as a full run
+        first += max(0, int(start_s * meta["source_fps"]) - first) // step * step
+    if duration_s is not None:
+        end = min(end, first + int(duration_s * meta["source_fps"]))
 
-    detector = InfrastructureDetector(weights, device, half=is_cuda(device), verifier_weights=verifier)
+    detector = InfrastructureDetector(weights, device, half=fp16 and is_cuda(device), verifier_weights=verifier)
+    segmenter = None
+    if seg_model:
+        from bikesafe.streetseg import StreetSegmenter
+
+        segmenter = StreetSegmenter(device, fp16=fp16, height=seg_height, model=seg_model)
     view = GroundView(calib)
-    cap = open_video(resolve_video(meta, videos))
-    if meta["start_frame"]:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, meta["start_frame"])
     objects: list[dict] = []
     lanes: list[dict] = []
-    idx, started = meta["start_frame"], time.perf_counter()
-    while idx < meta["end_frame"]:
-        if (idx - meta["start_frame"]) % step:
+    context: list[dict] = []  # where each tracked vehicle stands (kerb, roadway), for the relation features
+    crops: dict[int, bytes] = {}  # sign row -> JPEG of its crop, read once every sign is linked across samples
+    idx, started = first, time.perf_counter()
+    checkpoint = out_dir / CHECKPOINT
+    settings = {"version": CHECKPOINT_VERSION, "first": first, "end": end, "step": step, "seg_model": seg_model,
+                "seg_height": seg_height, "imgsz": imgsz, "bev_imgsz": bev_imgsz, "read_signs": read_signs,
+                "weights": Path(weights).name}
+    state = load_checkpoint(checkpoint, settings)
+    if state is not None:
+        objects, lanes, context, crops, idx = state["objects"], state["lanes"], state["context"], state["crops"], state["idx"]
+        print(f"{meta['stem']}: resuming from {len(lanes)} samples ({(idx - first) / max(1, end - first):.0%})",
+              flush=True)
+    done_at_start = len(lanes)
+    cap = open_video(resolve_video(meta, videos))
+    if idx:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    while idx < end:
+        if (idx - first) % step:
             if not cap.grab():
                 break
             idx += 1
@@ -659,16 +805,31 @@ def run(perception_dir: Path, analysis_root: Path, videos: Path, sample_fps: flo
         u_foe = foe.get(idx, calib.width / 2)
         boxes = boxes_by_frame.get(idx, np.zeros((0, 4)))
 
-        image_objects = detector(frame, imgsz, ("light", "sign"))
+        image_objects = detector(frame, imgsz, ("light",) if segmenter else ("light", "sign"))
+        labels = None
+        if segmenter is not None:
+            labels, prob = segmenter(frame)
+            for d in sign_boxes(labels, prob, frame.shape):
+                image_objects.append({"category": "other_sign", "kind": "sign", **d})
+            labels = full_resolution(labels, frame.shape)
+            if idx in tracked_by_frame:
+                tracked = tracked_by_frame[idx]
+                context += [{"frame": idx, **c} for c in vehicle_context(
+                    labels, tracked[["x1", "y1", "x2", "y2"]].to_numpy(float), tracked.track_id.astype(int),
+                    u_foe, calib.horizon_v, calib.lateral_height_m)]
+        image_objects = [d for d in image_objects if d["kind"] != "sign" or d["y2"] - d["y1"] >= MIN_SIGN_H]
         detector.confirm_stop_signs(frame, image_objects, imgsz)
         for d in image_objects:
-            d.pop("stop_confirmed", None)
+            d.pop("seg_area", None)
             state, share = ("", 0.0)
             if d["kind"] == "light":
                 crop = frame[int(d["y1"]): int(np.ceil(d["y2"])), int(d["x1"]): int(np.ceil(d["x2"]))]
                 state, share = light_state(crop)
-            objects.append({"frame": idx, "time_s": t, **d, "light_state": state, "state_share": share,
-                            "ground_x": np.nan, "ground_z": np.nan})
+            elif read_signs:
+                crops[len(objects)] = cv2.imencode(".jpg", sign_crop(frame, (d["x1"], d["y1"], d["x2"], d["y2"])),
+                                                   [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes()
+            objects.append({"frame": idx, "time_s": t, "stop_confirmed": False, **d, "light_state": state,
+                            "state_share": share, "ground_x": np.nan, "ground_z": np.nan})
 
         bev = view.warp(frame, u_foe)
         valid = view.warp(road_mask(frame.shape[:2], calib.horizon_v, boxes), u_foe, nearest=True) > 0
@@ -678,30 +839,125 @@ def run(perception_dir: Path, analysis_root: Path, videos: Path, sample_fps: flo
             if valid[int((d["y1"] + d["y2"]) / 2), int((d["x1"] + d["x2"]) / 2)]:
                 stencils.append({**d, "x": gx, "z": gz})
                 objects.append({"frame": idx, "time_s": t, **d, "light_state": "", "state_share": 0.0,
-                                "ground_x": gx, "ground_z": gz})
-        white, yellow = bev_paint(bev, valid)
+                                "ground_x": gx, "ground_z": gz, "stop_confirmed": False})
+        surfaces = {}
+        if labels is not None:
+            bev_labels = view.warp(labels, u_foe, nearest=True)
+            white, yellow = bev_paint(bev, valid, bev_labels == LANE_MARKING)
+            surfaces = {"bike_surface": surface_share(bev_labels, valid, view, (BIKE_LANE,)),
+                        "crosswalk": surface_share(bev_labels, valid, view, (CROSSWALK_MARKING, CROSSWALK_PLAIN))}
+        else:
+            white, yellow = bev_paint(bev, valid)
         lines = lane_lines(white, yellow, valid, view.zs)
         vehicle_x, vehicle_z = vehicles_on_ground(boxes, calib, u_foe)
         lanes.append({"frame": idx, "time_s": t, "u_foe": u_foe, "road_visible": float(valid.mean()),
-                      **lane_record(lines, stencils, green_share(bev, valid, view), vehicle_x, vehicle_z)})
+                      **lane_record(lines, stencils, green_share(bev, valid, view), vehicle_x, vehicle_z, **surfaces)})
         idx += 1
-        if len(lanes) % 200 == 0:
-            done = (idx - meta["start_frame"]) / max(1, meta["end_frame"] - meta["start_frame"])
+        if len(lanes) % CHECKPOINT_SAMPLES == 0:
+            save_checkpoint(checkpoint, {"settings": settings, "objects": objects, "lanes": lanes, "context": context,
+                                         "crops": crops, "idx": idx})
+            done = (idx - first) / max(1, end - first)
+            elapsed = time.perf_counter() - started
+            rate = elapsed / max(1, len(lanes) - done_at_start)
+            remaining = rate * (end - idx) / step / 3600
             print(f"{meta['stem']}: {done:5.1%} {len(lanes)} samples {len(objects)} objects "
-                  f"{(time.perf_counter() - started) / 60:.1f} min", flush=True)
+                  f"{elapsed / 60:.1f} min, {rate:.1f} s/sample, about {remaining:.1f} h to go", flush=True)
     cap.release()
+    if idx < end - 2 * step:  # the video stopped before the ride did: a truncated or unreadable file
+        if len(lanes) > done_at_start:
+            save_checkpoint(checkpoint, {"settings": settings, "objects": objects, "lanes": lanes, "context": context,
+                                         "crops": crops, "idx": idx})
+        raise SystemExit(f"{meta['stem']}: the video ended at frame {idx} of {end} - "
+                         f"{resolve_video(meta, videos)} is incomplete or unreadable; nothing written (progress kept)")
 
-    obj = pd.DataFrame(objects, columns=["frame", "time_s", "category", "kind", "conf", "x1", "y1", "x2", "y2",
-                                         "light_state", "state_share", "ground_x", "ground_z"])
+    obj = pd.DataFrame(objects, columns=OBJECT_COLUMNS)
     obj["object_id"] = link_objects(obj, foe, calib.horizon_v).to_numpy()
+    obj["sign_text"], obj["speed_limit"], obj["type_conf"] = "", np.nan, np.nan
+    obj.loc[(obj.kind == "sign") & obj.stop_confirmed.astype(bool), "category"] = "stop"
     lane_table = pd.DataFrame(lanes)
     obj_path, lane_path = out_dir / "infrastructure.parquet", out_dir / "lanes.parquet"
+    # everything the pass measured is written before the signs are read, so a failed read loses only the reading
     obj.to_parquet(obj_path, index=False)
     lane_table.to_parquet(lane_path, index=False)
+    if seg_model:
+        pd.DataFrame(context, columns=CONTEXT_COLUMNS).to_parquet(out_dir / "vehicle_context.parquet", index=False)
+    if crops:
+        pd.DataFrame({"row": list(crops), "jpeg": [bytes(b) for b in crops.values()]}).to_parquet(
+            out_dir / SIGN_CROPS, index=False)
+        del detector, segmenter  # free the GPU for the readers
+        free_gpu(device)
+        obj = read_sign_objects(obj, crops, device, fp16, ocr_model, features_path=out_dir / SIGN_FEATURES)
+        obj.to_parquet(obj_path, index=False)
+    checkpoint.unlink(missing_ok=True)
+    signs_read = bool(crops) and read_signs
+    write_json(out_dir / COVERAGE, {
+        "first_frame": first, "end_frame": end, "ride_start_frame": meta["start_frame"],
+        "ride_end_frame": meta["end_frame"],
+        "complete": first == meta["start_frame"] and end >= meta["end_frame"],
+        "samples": len(lane_table), "sample_fps": sample_fps, "seg_model": seg_model, "seg_height": seg_height,
+        "signs_read": signs_read, "ocr_model": ocr_model, "sign_typing": typing_fingerprint() if signs_read else None,
+        "minutes": round((time.perf_counter() - started) / 60, 1)})
     in_lane = lane_table.bike_lane_evidence.gt(0).mean() if len(lane_table) else 0.0
-    print(f"{meta['stem']}: {len(lane_table)} samples, {obj.object_id.nunique() if len(obj) else 0} lights/signs/stencils,"
-          f" bike-lane evidence in {in_lane:.0%} of samples, {(time.perf_counter() - started) / 60:.1f} min", flush=True)
+    n_signs = obj[obj.kind == "sign"].object_id.nunique()
+    print(f"{meta['stem']}: {len(lane_table)} samples, {obj.object_id.nunique() if len(obj) else 0} lights/signs/stencils"
+          f" ({n_signs} signs), bike-lane evidence in {in_lane:.0%} of samples, "
+          f"{(time.perf_counter() - started) / 60:.1f} min", flush=True)
     return obj_path, lane_path
+
+
+def read_sign_objects(obj: pd.DataFrame, crops: dict, device: str, fp16: bool,
+                      ocr_model: str | None = OCR_MODEL, texts: dict[int, str] | None = None,
+                      features_path: Path | None = None) -> pd.DataFrame:
+    """Type and read every linked sign (bikesafe.signs) and write the result on all of its rows. Signs the reader is
+    sure are not traffic signs (shop signs, adverts) become kind "rejected_sign", which no output counts; rows are kept
+    so they stay aligned with the saved crops. `crops` maps an object row to its JPEG crop. The CLIP image features
+    of the crops are kept in `features_path` (SIGN_FEATURES), so typing the signs again skips CLIP's image side."""
+    from bikesafe.signs import load_features, read_signs, save_features
+
+    signs = obj[obj.kind == "sign"]
+    decoded = {i: cv2.imdecode(np.frombuffer(bytes(buf), np.uint8), cv2.IMREAD_COLOR) for i, buf in crops.items()
+               if i in signs.index}
+    features = load_features(features_path, features_path.parent / SIGN_CROPS) if features_path else {}
+    save = (lambda f: save_features(features_path, f)) if features_path is not None else None
+    found = read_signs(signs, decoded, device, fp16, ocr_model=ocr_model, texts=texts, features=features,
+                       on_features=save)
+    for object_id, info in found.items():
+        rows = obj.object_id == object_id
+        obj.loc[rows, "category"] = info["category"]
+        obj.loc[rows, "sign_text"] = info["sign_text"]
+        obj.loc[rows, "speed_limit"] = info["speed_limit"]
+        obj.loc[rows, "type_conf"] = info["type_conf"]
+    obj.loc[obj.category == "not_a_sign", "kind"] = "rejected_sign"
+    return obj
+
+
+def read_only(perception_dir: Path, analysis_dir: Path, device: str, fp16: bool, ocr_model: str | None,
+              keep_text: bool = False) -> None:
+    """Link and read the signs of a finished pass again from its saved crops (after a failed read, or with another OCR
+    model, linking rule or sign probe), without running the detectors again. `keep_text` reuses the text read before
+    instead of running Florence-2 again - enough to type the signs anew after a review round."""
+    meta = read_json(perception_dir / "meta.json")
+    calib = fit_horizon(pd.read_parquet(perception_dir / "detections.parquet"), meta["width"], meta["height"],
+                        meta["processed_fps"], meta["stride"])
+    obj = pd.read_parquet(analysis_dir / "infrastructure.parquet")
+    saved = pd.read_parquet(analysis_dir / SIGN_CROPS)
+    unread = obj.kind.isin(["sign", "rejected_sign"])
+    obj.loc[unread, "kind"] = "sign"
+    old_text = obj.sign_text.fillna("").astype(str) if "sign_text" in obj else pd.Series("", index=obj.index)
+    obj["object_id"] = link_objects(obj, load_ego_foe(analysis_dir, calib), calib.horizon_v).to_numpy()
+    obj.loc[unread, "category"] = np.where(obj.loc[unread, "stop_confirmed"].astype(bool), "stop", "other_sign")
+    texts = None
+    if keep_text:
+        read = obj.assign(text=old_text)[unread & (old_text != "")]
+        texts = {int(k): str(g.text.mode().iloc[0]) for k, g in read.groupby("object_id")}
+    obj = read_sign_objects(obj, dict(zip(saved.row.astype(int), saved.jpeg)), device, fp16, ocr_model, texts,
+                            features_path=analysis_dir / SIGN_FEATURES)
+    obj.to_parquet(analysis_dir / "infrastructure.parquet", index=False)
+    coverage = analysis_dir / COVERAGE
+    if coverage.exists():
+        write_json(coverage, read_json(coverage) | {"signs_read": True, "sign_typing": typing_fingerprint()}
+                   | ({} if keep_text else {"ocr_model": ocr_model}))
+    print(f"{analysis_dir.name}: {obj[obj.kind == 'sign'].object_id.nunique()} signs read")
 
 
 def main() -> None:
@@ -710,13 +966,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("perception_dirs", nargs="*", type=Path)
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
-    parser.add_argument("--videos", type=Path, default=ROOT / "videos")
+    parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--sample-fps", type=float, default=2.0)
     parser.add_argument("--model", default=DEFAULT_MODEL, help="YOLOE-26 weights (downloaded by ultralytics on first use)")
+    parser.add_argument("--seg-model", default=VISTAS_MODEL,
+                        help="Street-scene segmenter for signs and lane paint (Hugging Face id), or 'none'")
+    parser.add_argument("--seg-height", type=int, default=SEG_HEIGHT,
+                        help="Rows the frame is resized to for the segmenter (1088 finds smaller signs, ~2x slower)")
+    parser.add_argument("--no-read-signs", action="store_true", help="Do not type and read the signs (CLIP, Florence-2)")
+    parser.add_argument("--ocr-model", default=OCR_MODEL,
+                        help="Florence-2 weights that read the signs ('none' types them from appearance only)")
+    parser.add_argument("--read-only", action="store_true",
+                        help="Only read the signs again from the crops a finished pass saved (sign_crops.parquet)")
+    parser.add_argument("--keep-text", action="store_true",
+                        help="With --read-only: keep the text read before and only type the signs again")
     parser.add_argument("--imgsz", type=int, default=1280, help="Detector input size for the camera image")
     parser.add_argument("--bev-imgsz", type=int, default=640, help="Detector input size for the bird's-eye view")
     parser.add_argument("--stop-verifier", default=STOP_VERIFIER, help="COCO-trained YOLO weights that confirm stop signs")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--fp32", action="store_true", help="Full precision on the GPU (FP16 is the default on CUDA)")
+    parser.add_argument("--start-s", type=float, default=None, help="Only process a window of each ride (for checks)")
+    parser.add_argument("--duration-s", type=float, default=None)
     parser.add_argument("--build-vocab", action="store_true",
                         help="Only (re)build models/infrastructure_vocab.npz; needs the text encoder download once")
     parser.add_argument("--overwrite", action="store_true")
@@ -730,13 +1000,20 @@ def main() -> None:
         feats = text_features(model, list(VOCABULARY))
         print(f"wrote {VOCAB_CACHE} ({feats.shape[1]} prompts)")
         return
+    ocr_model = None if args.ocr_model == "none" else args.ocr_model
     for path in args.perception_dirs:
         stem = read_json(path / "meta.json")["stem"]
-        if (args.analysis / stem / "lanes.parquet").exists() and not args.overwrite:
+        if args.read_only:
+            read_only(path, args.analysis / stem, args.device, not args.fp32, ocr_model, args.keep_text)
+            continue
+        windowed = args.start_s is not None or args.duration_s is not None
+        if pass_complete(args.analysis / stem) and not args.overwrite and not windowed:
             print(f"skip {stem}: infrastructure exists")
             continue
         run(path, args.analysis, args.videos, args.sample_fps, args.device, args.model, args.imgsz, args.bev_imgsz,
-            args.stop_verifier)
+            args.stop_verifier, fp16=not args.fp32, seg_model=None if args.seg_model == "none" else args.seg_model,
+            seg_height=args.seg_height, read_signs=not args.no_read_signs, ocr_model=ocr_model, start_s=args.start_s,
+            duration_s=args.duration_s)
 
 
 if __name__ == "__main__":

@@ -181,7 +181,7 @@ def stitch(dets: pd.DataFrame, width: int, fps: float) -> pd.DataFrame:
     """Links between tracks of one video: kind "duplicate" (two boxes on one vehicle at the same time) and kind
     "gap" (A ended, B continues it), the latter one-to-one, best score first. `dets` needs frame, time_s, track_id,
     class_id, x1, y1, x2, y2 and, when the perception pass stored them, obj_dx, obj_dy, obj_n."""
-    dets = dets[dets.track_id >= 0]
+    dets = pd.DataFrame(dets[dets.track_id >= 0])
     if dets.empty:
         return pd.DataFrame(columns=LINK_COLUMNS)
     dup = duplicates(dets)

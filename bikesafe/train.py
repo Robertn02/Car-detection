@@ -3,8 +3,11 @@
 Compares (1) the hand-written rules, (2) a depth-limited decision tree on physical features (readable rules
 learned from labels), (3) gradient boosting and (4) extra trees on the physics-defined features. The best model by
 macro-F1 within 15 m across held-out videos is refit on all labels and saved for bikesafe.exposure.
-Also writes feature_ablation.csv (version-2 features vs + flow motion vs the full version 3) and scores the riding
-context for the CLIP probe alone and fused with the lane-paint detector when bikesafe.infrastructure has run.
+Also writes feature_ablation.csv (the feature sets of feature_sets(): version 2, + flow motion, version 3 = + lane
+paint, + flow consistency, version 5 = + kerb context, + path, version 7 = + motion while the rider is stopped, and
+version 8 - geometry, flow and stopped-rider motion - which the model uses) and scores the riding context for the
+CLIP probe alone and with the lane-paint detector deciding bike lane vs shared road, when bikesafe.infrastructure has
+run. Feature sets are compared over several seeds with scripts/compare_features.py, not on one ablation run.
 
     python -m bikesafe.train
 """
@@ -16,6 +19,7 @@ import json
 import pickle
 from pathlib import Path
 
+import cv2
 import matplotlib
 
 matplotlib.use("Agg")
@@ -30,8 +34,9 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier, export_text
 
-from bikesafe.common import RELATION_GROUP, RELATIONS, ROOT, SCENES, read_json
+from bikesafe.common import RELATION_GROUP, RELATIONS, ROOT, VIDEOS, SCENES, is_cuda, open_video, read_json, resolve_video
 from bikesafe.infrastructure import per_second_summary
+from bikesafe.labels import align_track_labels, alignment_summary
 from bikesafe.scene import scene_features, zero_shot
 from bikesafe.tracks import rule_relation
 
@@ -55,9 +60,30 @@ FLOW_FEATURES = [
 # ... and where the vehicle sits relative to the painted lines and the rider's bike lane (bikesafe.infrastructure)
 LANE_FEATURES = ["paint_lines_between_med", "paint_solid_between_max", "paint_yellow_between_max", "in_rider_lane_frac",
                  "rider_bike_lane_frac"]
-PHYSICAL_FEATURES = PHYSICAL_FEATURES_V2 + FLOW_FEATURES + LANE_FEATURES
+PHYSICAL_FEATURES_V3 = PHYSICAL_FEATURES_V2 + FLOW_FEATURES + LANE_FEATURES
+# Version 5: how consistently the flow says static / co-moving / approaching, and where the vehicle stands relative to
+# the kerb (bikesafe.streetseg.vehicle_context). The remaining errors after v4 were mostly stationary vehicles that are
+# not parked - queued beside the rider or waiting on a side street - which motion cannot tell from parked cars.
+CONSISTENCY_FEATURES = ["frac_closing_static", "frac_closing_with", "frac_closing_against", "frac_grid_static",
+                        "frac_grid_with", "frac_grid_against"]
+CONTEXT_FEATURES = ["kerb_gap_med", "frac_kerb_close", "frac_outer_vehicle", "inner_road_med", "under_offroad_med"]
+# Version 6: time in the rider's path ahead (and there while the rider waits) - queued traffic, not parked. Scored in
+# the ablation but not used: with 13 near in-my-lane labels it lowered near macro-F1 (0.59 vs 0.64 for v5). The review
+# queue (bikesafe.review) uses it to find candidates instead.
+PATH_FEATURES = ["frac_in_path", "frac_in_path_rider_stopped", "in_path_z_min"]
+# Version 7: the vehicle's own motion while the rider is stopped - queued, crossing and turning traffic moves then,
+# parked cars do not (bikesafe.tracks.own_motion_while_stopped)
+STOPPED_FEATURES = ["frac_rider_stopped", "stopped_own_speed_med", "stopped_own_speed_p90", "frac_stopped_own_moving"]
+PHYSICAL_FEATURES_V5 = PHYSICAL_FEATURES_V3 + CONSISTENCY_FEATURES + CONTEXT_FEATURES
+PHYSICAL_FEATURES_V7 = PHYSICAL_FEATURES_V5 + STOPPED_FEATURES
+# Version 8 (used): geometry, flow and the vehicle's motion while the rider is stopped, without the lane-paint and kerb
+# features. With the lane and kerb pass over whole rides (not a window), those lowered near macro-F1 (5 seeds, 321 near
+# labels: v2+flow 0.631, v3 0.612, v5 0.600, v7 0.607) - the same noisy paint that calls shared roads bike lanes - while
+# the stopped-rider features still help where they were made for (stopped-rider accuracy 0.818 -> 0.853). v8: accuracy
+# 0.730, macro-F1 0.627, 39.6 moving vehicles called parked against 43.0 for v7.
+PHYSICAL_FEATURES = PHYSICAL_FEATURES_V2 + FLOW_FEATURES + STOPPED_FEATURES
 NON_FEATURES = {"video", "track_id", "t_start", "t_end", "scene", "ride_scene", "rule_relation", "label", "labeler", "notes",
-                "card_id", "vehicle_id", "vehicle_tracks", "vehicle_relation"}
+                "card_id", "vehicle_id", "vehicle_tracks", "vehicle_relation", "labelled_track_id", "alignment"}
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
@@ -68,9 +94,13 @@ def as_float(df: pd.DataFrame, cols: list[str]) -> np.ndarray:
     return df[cols].astype(float).to_numpy()
 
 
-def load_labelled_tracks(analysis: Path, labels_csv: Path) -> pd.DataFrame:
+def load_labelled_tracks(analysis: Path, labels_csv: Path, perception: Path) -> pd.DataFrame:
     labels = pd.read_csv(labels_csv)
     labels = labels[labels.label.isin(RELATIONS)]
+    # Labels name tracker ids of the perception run they were made on; follow each vehicle to its current id.
+    labels = align_track_labels(labels, perception, analysis=analysis)
+    print(f"track labels: {alignment_summary(labels)}")
+    labels = labels[labels.alignment != "lost"]
     tracks = pd.concat([pd.read_parquet(p) for p in sorted(analysis.glob("*/tracks.parquet"))], ignore_index=True)
     merged = labels.merge(tracks, on=["video", "track_id"], how="inner")
     for flag in ("enter_edge", "exit_edge"):
@@ -114,11 +144,18 @@ def lovo_predict(data: pd.DataFrame, model, cols: list[str]) -> np.ndarray:
     return pred
 
 
+def feature_sets() -> dict[str, list[str]]:
+    """The feature sets compared in the ablation (and by scripts/compare_features.py), by name."""
+    return {"v2": PHYSICAL_FEATURES_V2, "v2+flow": PHYSICAL_FEATURES_V2 + FLOW_FEATURES, "v3": PHYSICAL_FEATURES_V3,
+            "v3+consistency": PHYSICAL_FEATURES_V3 + CONSISTENCY_FEATURES, "v5": PHYSICAL_FEATURES_V5,
+            "v5+path": PHYSICAL_FEATURES_V5 + PATH_FEATURES, "v7": PHYSICAL_FEATURES_V7, "v8": PHYSICAL_FEATURES}
+
+
 def feature_ablation(data: pd.DataFrame, near: pd.DataFrame, out: Path) -> pd.DataFrame:
-    """Leave-one-video-out scores with the version-2 features against the version-3 set (v2 + flow motion + lane
-    paint), for each model, so a re-run shows directly what the new features are worth on these labels."""
+    """Leave-one-video-out scores for each feature set (feature_sets()), for each model, so a re-run shows directly
+    what the features are worth on these labels (one seed: compare sets over several with scripts/compare_features.py)."""
     available = set(feature_columns(data))
-    sets = {"v2": PHYSICAL_FEATURES_V2, "v2+flow": PHYSICAL_FEATURES_V2 + FLOW_FEATURES, "v3": PHYSICAL_FEATURES}
+    sets = feature_sets()
     rows = []
     for subset_name, subset in (("all", data), ("near", near)):
         y = subset.label.to_numpy()
@@ -226,10 +263,12 @@ def evaluate_scenes(perception: Path, labels_csv: Path, out: Path, analysis: Pat
             print(f"scene labels for {video} skipped: no CLIP embeddings in {perception / video}")
             continue
         frames, feats = scene_features(perception / video / "clip.npz")
-        index = {int(f): i for i, f in enumerate(frames)}
+        # nearest embedded frame: a perception run at another frame rate samples slightly different frames
+        tolerance = 0.5 * read_json(perception / video / "meta.json")["source_fps"]
         for row in group.itertuples():
-            if int(row.frame) in index:
-                xs.append(feats[index[int(row.frame)]])
+            i = int(np.abs(frames.astype(int) - int(row.frame)).argmin())
+            if abs(int(frames[i]) - int(row.frame)) <= tolerance:
+                xs.append(feats[i])
                 ys.append(row.label)
                 vids.append(video)
                 keys.append((str(video), int(row.frame)))
@@ -259,7 +298,8 @@ def evaluate_scenes(perception: Path, labels_csv: Path, out: Path, analysis: Pat
     predictions = {"zero_shot": zs_pred, "linear_probe": probe_pred}
     paint = lane_paint_at(analysis, perception, keys) if analysis is not None else np.full(len(y), np.nan)
     if np.isfinite(paint).any():
-        # same rule as bikesafe.exposure.fuse_scene: CLIP keeps separated paths, the lane paint decides the rest
+        # the paint deciding bike lane vs shared road where CLIP does not see a separated path: kept as the check
+        # that showed it does not help (bikesafe.exposure reports CLIP's context and the paint call beside it)
         fused = probe_pred.copy()
         road = ~(probe_sep >= 0.5)
         fused[road & (paint == 1.0)] = "bike_lane"
@@ -278,12 +318,54 @@ def evaluate_scenes(perception: Path, labels_csv: Path, out: Path, analysis: Pat
     return summary, final
 
 
+def train_sign_probe(labels_csv: Path, perception: Path, videos: Path, models: Path, out: Path) -> dict:
+    """Fit the sign-type probe (bikesafe.signs.train_probe) on the signs typed in bikesafe.review, cropping each one
+    from its video again, and write models/typology/sign_probe.pkl and results/typology/sign_evaluation.json."""
+    import torch
+
+    from bikesafe.signs import MIN_PROBE_LABELS, SignTyper, sign_crop, train_probe
+
+    labels = pd.read_csv(labels_csv) if labels_csv.exists() else pd.DataFrame()
+    if len(labels) < MIN_PROBE_LABELS or labels.video.nunique() < 2:  # nothing to validate a probe on: no GPU needed
+        (models / "sign_probe.pkl").unlink(missing_ok=True)
+        report = {"trained": False, "n_labels": int(len(labels)),
+                  "reason": "fewer than 20 reviewed signs" if len(labels) < MIN_PROBE_LABELS
+                  else "reviewed signs from fewer than two rides"}
+        (out / "sign_evaluation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return report
+    crops, kept = [], []
+    for video, rows in labels.groupby("video"):
+        meta_path = perception / str(video) / "meta.json"
+        if not meta_path.exists():
+            continue
+        cap = open_video(resolve_video(read_json(meta_path), videos))
+        for r in rows.sort_values("frame").itertuples():
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(r.frame))
+            ok, image = cap.read()
+            if ok:
+                crops.append(sign_crop(image, (r.x1, r.y1, r.x2, r.y2)))
+                kept.append(r.Index)
+        cap.release()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    typer = SignTyper(device, fp16=is_cuda(device))
+    probe, report = train_probe(labels.loc[kept, "label"], crops, typer, labels.loc[kept, "video"])
+    if probe is not None:
+        (models / "sign_probe.pkl").write_bytes(pickle.dumps(probe))
+    else:  # an earlier probe that no longer validates must not keep typing the signs
+        (models / "sign_probe.pkl").unlink(missing_ok=True)
+    (out / "sign_evaluation.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
     parser.add_argument("--perception", type=Path, default=ROOT / "work" / "perception")
     parser.add_argument("--track-labels", type=Path, default=ROOT / "data" / "typology" / "track_labels.csv")
     parser.add_argument("--scene-labels", type=Path, default=ROOT / "data" / "typology" / "scene_labels.csv")
+    parser.add_argument("--sign-labels", type=Path, default=ROOT / "data" / "typology" / "sign_labels.csv",
+                        help="Signs typed in bikesafe.review; trains the sign-type probe")
+    parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--out", type=Path, default=ROOT / "results" / "typology")
     parser.add_argument("--models", type=Path, default=ROOT / "models" / "typology")
     parser.add_argument("--near-z", type=float, default=15.0,
@@ -292,11 +374,17 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     args.models.mkdir(parents=True, exist_ok=True)
 
+    sign_report = train_sign_probe(args.sign_labels, args.perception, args.videos, args.models, args.out)
+    print(f"sign probe: {sign_report}")
     scene_summary, scene_probe = evaluate_scenes(args.perception, args.scene_labels, args.out, args.analysis)
     if scene_probe is not None:
         (args.models / "scene_probe.pkl").write_bytes(pickle.dumps(scene_probe))
 
-    data = load_labelled_tracks(args.analysis, args.track_labels)
+    data = load_labelled_tracks(args.analysis, args.track_labels, args.perception)
+    if data.label.nunique() < len(RELATIONS) or data.video.nunique() < 2:
+        print(f"{len(data)} labelled tracks from {data.video.nunique()} processed videos: the relation model is not "
+              f"retrained (it needs every relation and at least two videos); keeping {args.models / 'relation_model.pkl'}")
+        return
     near = data[data.z_min <= args.near_z]
     ablation = feature_ablation(data, near, args.out)
     print("feature ablation (leave-one-video-out):")

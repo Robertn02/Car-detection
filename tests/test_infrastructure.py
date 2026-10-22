@@ -7,7 +7,9 @@ import pytest
 
 from bikesafe.geometry import Calibration
 from bikesafe.infrastructure import (BEV_RES, BEV_X, BEV_Z, GroundView, bev_paint, bike_lane_evidence, lane_lines,
-                                     lane_record, light_state, link_objects, per_second_summary)
+                                     lane_record, light_state, line_extents, link_objects, parse_lines,
+                                     per_second_summary)
+from bikesafe.render import lane_line_tracks, lines_at, static_box
 
 
 def calibration() -> Calibration:
@@ -140,3 +142,79 @@ def test_link_objects_follows_a_static_sign_and_separates_two():
     ids = link_objects(objects, {6 * k: foe[0] for k in range(4)}, foe[1])
     assert ids.nunique() == 2
     assert ids[objects.x1 >= 1000].nunique() == 1
+
+
+def test_segmented_paint_keeps_only_the_marked_strokes_and_lines_carry_their_extent():
+    """With the segmenter's lane-marking mask, a bright strip that is not marked (sunlit asphalt, a kerb) is ignored
+    even where it is as thin as paint, and each line records how far ahead its paint was seen."""
+    view = GroundView(calibration())
+    shape = (len(view.zs), len(view.xs))
+    bev = paint_bev([(-1.0, True), (1.5, True)], shape)
+    marking = np.zeros(shape, bool)
+    col = int((-1.0 - BEV_X[0]) / BEV_RES)
+    near = view.zs <= 9.0
+    marking[near, col - 3: col + 4] = True  # only the left line, and only up to 9 m ahead, is marked
+    valid = np.ones(shape, bool)
+    white, yellow = bev_paint(bev, valid, marking)
+    lines = lane_lines(white, yellow, valid, view.zs)
+    assert len(lines) == 1 and lines[0]["x"] == pytest.approx(-1.0, abs=0.15)
+    assert lines[0]["z_far"] <= 9.5 and lines[0]["z_near"] <= 3.5
+    rec = lane_record(lines, [], float("nan"), np.zeros(0), np.zeros(0), bike_surface=0.4, crosswalk=0.0)
+    assert line_extents(rec["lines_json"])[0][1] == pytest.approx(lines[0]["z_far"], abs=0.05)
+    assert parse_lines(rec["lines_json"])[0][0] == pytest.approx(lines[0]["x"], abs=0.01)
+    assert bike_lane_evidence(rec) > 0.5  # solid line on the left plus bike-lane surface
+
+
+def test_bike_lane_surface_counts_and_a_crosswalk_silences_the_sample():
+    assert bike_lane_evidence(record(bike_lane_surface=0.5)) > 0.5
+    assert np.isnan(bike_lane_evidence(record(lines=[line(-0.9, True)], crosswalk_share=0.3)))
+
+
+def lanes_table(xs_per_sample: list[list[float]], crosswalk: list[float] | None = None) -> pd.DataFrame:
+    rows = []
+    for i, xs in enumerate(xs_per_sample):
+        rows.append({"time_s": 0.5 * i, "frame": 6 * i, "u_foe": 960.0, "n_lines": len(xs),
+                     "crosswalk_share": (crosswalk or [0.0] * len(xs_per_sample))[i],
+                     "lines_json": ";".join(f"{x:.2f}:1:0.00:0.000:3.0:12.0" for x in xs)})
+    return pd.DataFrame(rows)
+
+
+def test_lane_lines_are_drawn_only_when_confirmed_and_interpolated_between_samples():
+    # a line at -1.0 m drifting to -1.2 m; a spurious line at 2.0 m in one sample only
+    lanes = lanes_table([[-1.0], [-1.1, 2.0], [-1.2], [-1.2]])
+    tracks = lane_line_tracks(lanes)
+    assert tracks.groupby("line_id").size().max() == 4  # the drifting line keeps one id
+    drawn, u_foe = lines_at(0.75, lanes, tracks)  # between samples 1 and 2
+    assert u_foe == 960.0 and len(drawn) == 1  # the one-off line is not confirmed
+    assert -1.2 <= drawn[0]["x"] <= -1.0
+
+
+def test_no_lane_lines_are_drawn_across_a_crosswalk():
+    lanes = lanes_table([[-1.0], [-1.0], [-1.0]], crosswalk=[0.0, 0.4, 0.0])
+    tracks = lane_line_tracks(lanes)
+    assert lines_at(0.5, lanes, tracks)[0] == []
+    assert len(lines_at(0.0, lanes, tracks)[0]) == 1
+
+
+def test_static_box_follows_a_sign_growing_about_the_focus_of_expansion():
+    foe = np.array([960.0, 600.0])
+    def at(scale):  # a sign 1.5x as far right as up from the FOE, 30 px tall at scale 1
+        centre = foe + scale * np.array([300.0, -200.0])
+        half = scale * np.array([10.0, 15.0])
+        return np.concatenate([centre - half, centre + half])
+    b0, b1 = at(1.0), at(1.6)
+    assert np.allclose(static_box(b0, b1, 0.5), at(1.6 ** 0.5))  # in between
+    assert np.allclose(static_box(b0, b1, 1.4), at(1.6 ** 1.4))  # after the last sample
+    assert np.allclose(static_box(b0, b0 + 2.0, 0.5), b0 + 1.0)  # no growth: linear
+
+
+def test_short_box_gaps_are_bridged_and_long_ones_are_not():
+    from bikesafe.render import fill_box_gaps
+
+    kin = pd.DataFrame({"track_id": [1, 1, 1, 1], "frame": [10, 12, 16, 30], "time_s": [5.0, 6.0, 8.0, 15.0],
+                        "x1": [0.0, 10.0, 30.0, 40.0], "y1": 0.0, "x2": 50.0, "y2": 50.0, "box_h": 50.0, "z_m": 5.0,
+                        "relation": "ego_lane"})
+    out = fill_box_gaps(kin, stride=2).sort_values("frame")
+    assert out.frame.tolist() == [10, 12, 14, 16, 30]  # one missing frame filled; the 14-frame gap left alone
+    filled = out[out.frame == 14].iloc[0]
+    assert filled.x1 == 20.0 and filled.time_s == 7.0 and filled.relation == "ego_lane"

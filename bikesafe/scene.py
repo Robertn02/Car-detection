@@ -1,8 +1,11 @@
 """Riding-context and vehicle-appearance scores from the CLIP embeddings stored by the perception pass.
 
 Scene (per second): separated_path / bike_lane / shared_road, zero-shot from prompts or from a linear probe
-trained on labelled frames (bikesafe.train). Vehicle crops: viewpoint (rear/front/side) and emergency-vehicle
-scores, averaged per track.
+trained on labelled frames (bikesafe.train). Vehicle crops: viewpoint (rear/front/side), emergency-vehicle and
+not-a-vehicle scores, averaged per track. The detector also boxes sidewalk delivery robots, scooters, wheelie bins,
+dumpsters and carts as cars or motorcycles; `not_vehicle` is the zero-shot probability of those. In daylight it
+separates them well; at night, on a single dark crop, real vehicles also score high, so it flags tracks for review
+(bikesafe.review) and is reported, but no detection is dropped on it.
 """
 
 from __future__ import annotations
@@ -47,8 +50,15 @@ VEHICLE_TYPE_PROMPTS = {
     "pickup": ["a pickup truck"],
     "van": ["a delivery van", "a cargo van"],
     "bus": ["a city bus"],
+    "motorcycle": ["a motorcycle", "a person riding a motorcycle", "a moped scooter with a rider"],
+    # not vehicles, but boxed as cars or motorcycles by the COCO detector
+    "robot": ["a small sidewalk delivery robot", "a six-wheeled food delivery robot on a sidewalk"],
+    "scooter_bike": ["a person riding an electric kick scooter", "a person riding a bicycle", "a parked bicycle"],
+    "pedestrian": ["a pedestrian walking", "a group of people"],
+    "street_object": ["a trash bin", "a dumpster", "a bench", "a traffic cone", "a construction trailer"],
 }
 EMERGENCY_TYPES = ["police_car", "ambulance", "fire_truck"]
+NOT_VEHICLE_TYPES = ["robot", "scooter_bike", "pedestrian", "street_object"]
 TEXT_CACHE = ROOT / "models" / "clip_prompt_embeddings.npz"
 
 
@@ -114,20 +124,28 @@ def scene_probabilities(clip_npz: Path, fps_source: float, probe=None, smooth_s:
     return df
 
 
-def crop_scores(clip_npz: Path) -> pd.DataFrame:
-    """Per-track mean viewpoint and emergency-vehicle probabilities from the throttled crop embeddings."""
+def crop_scores(clip_npz: Path, id_map: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Per-track mean viewpoint and emergency-vehicle probabilities from the throttled crop embeddings; with `id_map`
+    (bikesafe.identity) each crop goes to the track piece that held its box."""
     z = np.load(clip_npz)
     if len(z["crop"]) == 0:
-        return pd.DataFrame(columns=["track_id", "view_rear", "view_front", "view_side", "emergency", "n_crops"])
+        return pd.DataFrame(columns=["track_id", "view_rear", "view_front", "view_side", "emergency", "not_vehicle",
+                                     "n_crops"])
     emb = z["crop"].astype(np.float32)
     views = zero_shot(emb, list(VIEW_PROMPTS))
     types = zero_shot(emb, list(VEHICLE_TYPE_PROMPTS))
     emergency = types[:, [list(VEHICLE_TYPE_PROMPTS).index(t) for t in EMERGENCY_TYPES]].sum(axis=1)
+    not_vehicle = types[:, [list(VEHICLE_TYPE_PROMPTS).index(t) for t in NOT_VEHICLE_TYPES]].sum(axis=1)
     df = pd.DataFrame(views, columns=list(VIEW_PROMPTS))
     df["emergency"] = emergency
+    df["not_vehicle"] = not_vehicle
     df["track_id"] = z["crop_track"]
+    if id_map is not None:
+        from bikesafe.identity import remap_ids
+
+        df = remap_ids(df.assign(frame=z["crop_frame"]), id_map).drop(columns="frame")
     agg = df.groupby("track_id").agg(
         view_rear=("view_rear", "mean"), view_front=("view_front", "mean"), view_side=("view_side", "mean"),
-        emergency=("emergency", "max"), n_crops=("emergency", "size"),
+        emergency=("emergency", "max"), not_vehicle=("not_vehicle", "mean"), n_crops=("emergency", "size"),
     )
     return agg.reset_index()
