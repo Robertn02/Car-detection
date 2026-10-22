@@ -16,3 +16,6 @@ work/
 # Detector weights and the YOLOE text encoder that ultralytics downloads on first use (large; fetched automatically)
 models/yoloe-*.pt
 mobileclip*.ts
+
+# Overlay clips are published on the gh-pages branch (scripts/build_site.py); only their posters are kept here
+demos/*.mp4

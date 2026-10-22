@@ -103,7 +103,8 @@ class VideoOut:
     raw pixels, so each clip is encoded once.
     """
 
-    def __init__(self, path: Path, fps: float, size: tuple[int, int], crf: int = 20):
+    def __init__(self, path: Path, fps: float, size: tuple[int, int], crf: int = 20, max_mbps: float | None = None):
+        """`max_mbps` caps the bit rate (for clips streamed from a web page); quality is set by `crf` below the cap."""
         self.path = path
         try:
             import imageio_ffmpeg
@@ -113,9 +114,10 @@ class VideoOut:
             if not self._opencv.isOpened():
                 raise SystemExit(f"Could not create {path}")
             return
+        cap = ["-maxrate", f"{max_mbps}M", "-bufsize", f"{2 * max_mbps}M"] if max_mbps else []
         self._ffmpeg = imageio_ffmpeg.write_frames(
             str(path), size, pix_fmt_in="bgr24", fps=fps, codec="libx264", quality=None, macro_block_size=2,
-            output_params=["-crf", str(crf), "-preset", "medium", "-movflags", "+faststart"])
+            output_params=["-crf", str(crf), *cap, "-preset", "medium", "-movflags", "+faststart"])
         self._ffmpeg.send(None)
 
     def write(self, frame) -> None:

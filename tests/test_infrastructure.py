@@ -218,3 +218,13 @@ def test_short_box_gaps_are_bridged_and_long_ones_are_not():
     assert out.frame.tolist() == [10, 12, 14, 16, 30]  # one missing frame filled; the 14-frame gap left alone
     filled = out[out.frame == 14].iloc[0]
     assert filled.x1 == 20.0 and filled.time_s == 7.0 and filled.relation == "ego_lane"
+
+
+def test_every_source_frame_gets_a_box_between_detections():
+    from bikesafe.render import fill_box_gaps
+
+    kin = pd.DataFrame({"track_id": [1, 1, 1], "frame": [10, 12, 30], "time_s": [5.0, 6.0, 15.0],
+                        "x1": [0.0, 10.0, 40.0], "y1": 0.0, "x2": 50.0, "y2": 50.0, "box_h": 50.0, "z_m": 5.0})
+    out = fill_box_gaps(kin, stride=2, step=1).sort_values("frame")
+    assert out.frame.tolist() == [10, 11, 12, 30]  # frame 11 drawn; the 18-frame gap is a lost track, not filled
+    assert out[out.frame == 11].x1.iloc[0] == 5.0

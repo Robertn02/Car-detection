@@ -4,7 +4,7 @@
 
 then open http://127.0.0.1:8765. Three queues, each pre-filled with what the models said:
 
-* **Vehicles** - the relation of a vehicle to the rider, shown as a short animation of its track (magenta box) and a
+* **Vehicles** - the relation of a vehicle to the rider, shown as a looping clip of its track (magenta box) and a
   zoom. Keys 1-5 pick the relation, Enter accepts the model's answer, U marks it unclear, N not a vehicle (a delivery
   robot, a scooter, a bin), S skips, Z undoes.
 * **Signs** - each physical sign's largest view with its type and text (bikesafe.signs); pick the type, correct the
@@ -16,17 +16,26 @@ and conflicts between the model and the physics - "parked" while sitting in the 
 rider, "oncoming" while its rear is seen, model and rule baseline disagreeing. In "verify" mode the vehicle queue
 shows the existing labels instead (most of them came from AI-assisted review), those the model disagrees with first.
 
-Every decision goes to data/typology - track_labels.csv (with anchors, so labels survive a perception re-run),
-sign_labels.csv, plate_labels.csv - and to review_log.csv together with what the model had said. The Progress tab
-turns that log into how often each model agreed with the reviewer, per class; "Retrain" runs bikesafe.train and
-bikesafe.exposure so the next queue comes from the corrected models. This is the loop the pipeline learns from:
-model proposes, reviewer confirms or corrects, models retrain on the corrections.
+Every decision goes to data/typology (or --labels) - track_labels.csv with track_anchors.csv (so labels survive a
+perception re-run), sign_labels.csv, plate_labels.csv - and to review_log.csv together with what the model had said.
+The Progress tab turns that log into how often each model agreed with the reviewer, per class; "Retrain" runs
+bikesafe.train and bikesafe.exposure so the next queue comes from the corrected models. This is the loop the pipeline
+learns from: model proposes, reviewer confirms or corrects, models retrain on the corrections.
+
+    python -m bikesafe.review --export site/review      # a copy that needs no server (GitHub Pages)
+    python -m bikesafe.review --import decisions.json   # the decisions made on it
+
+The exported copy has the first --per-queue items of each queue with their clips and crops; its decisions stay in the
+viewer's browser until downloaded from its Progress tab.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -40,8 +49,9 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import RELATIONS, ROOT, VIDEOS, read_json
+from bikesafe.common import RELATIONS, ROOT, VIDEOS, VideoOut, read_json
 from bikesafe.labels import anchor_rows, append_anchors, load_anchors
+from bikesafe.render import fill_box_gaps
 
 LABELS_DIR = ROOT / "data" / "typology"
 REVIEW_LOG_COLUMNS = ["time", "reviewer", "kind", "video", "item", "model", "model_conf", "human", "text", "model_text"]
@@ -52,8 +62,10 @@ MIN_PLATE_W, MAX_PLATE_W = 40, 300  # px; narrower plates are unreadable to a re
 MAX_Z_M = 15.0  # vehicles reviewed: those that came this close (where relations are validated and matter)
 MIN_BOX_H = 40
 SPREAD_S = 4.0  # at most one queued vehicle per ride and this many seconds, so a queue is not one traffic jam
-STRIP_FRAMES = 8
-TILE = (640, 360)
+CLIP_WIDTH = 960  # px; vehicle clips
+CLIP_CRF = 25
+CLIP_MAX_S = 8.0  # a longer track plays faster, so every clip loops in about this long
+CLIP_PAD_S = 0.5  # shown before the track starts and after it ends
 SIGN_TYPES_UI = ["stop", "yield", "speed_limit", "do_not_enter", "one_way", "no_turn", "parking", "bike", "pedestrian",
                  "warning", "street_name", "guide", "lane_use", "bus_stop", "roadwork", "other_sign", "not_a_sign"]
 
@@ -151,29 +163,46 @@ def _read(cap: cv2.VideoCapture, frame: int) -> np.ndarray | None:
     return image if ok else None
 
 
-def track_strip(video: Path, dets: pd.DataFrame, track_id: int, n_frames: int = STRIP_FRAMES) -> bytes:
-    """Frames spread over a track (vertically stacked, TILE each) with its box in magenta and the others in grey -
-    the browser plays them as a short loop, which shows motion far better than single frames."""
-    t = dets[dets.track_id == track_id].sort_values("frame")
-    picks = t.frame.iloc[np.unique(np.linspace(0, len(t) - 1, min(n_frames, len(t))).round().astype(int))].tolist()
+def track_clip(video: Path, dets: pd.DataFrame, track_id: int, out: Path) -> bytes:
+    """The track as a short H.264 clip at the video's frame rate, its box in magenta and the other vehicles' in grey,
+    interpolated between the frames the detector ran on; a track longer than CLIP_MAX_S plays faster (the speed-up is
+    shown). Written to `out` and returned."""
+    t = dets[dets.track_id == track_id]
     cap = cv2.VideoCapture(str(video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    tiles = []
-    for frame in picks:
-        image = _read(cap, frame)
-        if image is None:
+    pad = int(round(CLIP_PAD_S * fps))
+    start, end = max(0, int(t.frame.min()) - pad), int(t.frame.max()) + pad
+    speed = max(1, int(np.ceil((end - start + 1) / fps / CLIP_MAX_S)))
+    window = dets[dets.frame.between(start - 2 * pad, end + 2 * pad)]
+    detected = np.unique(window.frame)
+    stride = int(np.median(np.diff(detected))) if len(detected) > 1 else 1
+    boxes = fill_box_gaps(window, stride, step=1)
+    boxes = boxes.assign(own=boxes.track_id == track_id).sort_values("own").groupby("frame")  # its box drawn last
+    present = set(boxes.groups)
+    scale = CLIP_WIDTH / cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    size = (CLIP_WIDTH, int(round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * scale)) // 2 * 2)
+    part = out.with_name(f"{out.stem}.{threading.get_ident()}.part.mp4")
+    writer = VideoOut(part, fps, size, crf=CLIP_CRF)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    for frame in range(start, end + 1):
+        if not cap.grab():
+            break
+        if (frame - start) % speed:
             continue
-        for o in dets[(dets.frame == frame) & (dets.track_id != track_id)].itertuples():
-            cv2.rectangle(image, (int(o.x1), int(o.y1)), (int(o.x2), int(o.y2)), (200, 200, 200), 2)
-        box = t[t.frame == frame].iloc[0]
-        cv2.rectangle(image, (int(box.x1) - 4, int(box.y1) - 4), (int(box.x2) + 4, int(box.y2) + 4), (255, 0, 255), 7)
-        tile = cv2.resize(image, TILE, interpolation=cv2.INTER_AREA)
-        cv2.putText(tile, f"t={frame / fps:.1f}s", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        tiles.append(tile)
+        image = cv2.resize(cap.retrieve()[1], size, interpolation=cv2.INTER_AREA)
+        for o in boxes.get_group(frame).itertuples() if frame in present else []:
+            x1, y1, x2, y2 = (np.array([o.x1, o.y1, o.x2, o.y2]) * scale).astype(int)
+            if o.own:
+                cv2.rectangle(image, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 0, 255), 4)
+            else:
+                cv2.rectangle(image, (x1, y1), (x2, y2), (200, 200, 200), 1)
+        label = f"t={frame / fps:.1f}s" + (f"  {speed}x speed" if speed > 1 else "")
+        cv2.putText(image, label, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        writer.write(image)
+    writer.release()
     cap.release()
-    if not tiles:
-        tiles = [np.zeros((TILE[1], TILE[0], 3), np.uint8)]
-    return cv2.imencode(".jpg", np.vstack(tiles), [cv2.IMWRITE_JPEG_QUALITY, 82])[1].tobytes()
+    os.replace(part, out)
+    return out.read_bytes()
 
 
 def track_zoom(video: Path, dets: pd.DataFrame, track_id: int) -> bytes:
@@ -227,6 +256,7 @@ class Store:
         self.analysis, self.perception, self.corpus, self.videos = analysis, perception, corpus, videos
         self.labels_dir, self.cache = labels_dir, cache
         self.lock = threading.Lock()
+        self.clip_lock = threading.Lock()
         self.retrain: dict = {"state": "idle", "log": ""}
         self.reload()
 
@@ -277,7 +307,7 @@ class Store:
         labelled = np.array([(v, k) in keys for v, k in zip(t.video, t.track_id)], bool)
         if mode == "verify":
             t = t[labelled].merge(labels[["video", "track_id", "label", "labeler"]], on=["video", "track_id"])
-            t = t[t.label.isin(RELATIONS)]
+            t = t[t.label.isin(RELATIONS)].copy()  # one block: the many proba columns fragment it
             p = np.array([row.get(f"proba_{row.label}", np.nan) for _, row in t.iterrows()], float)
             t = t.assign(score=1 - np.nan_to_num(p, nan=0.5), reasons=[f"labelled {lab} by {who}" for lab, who in
                                                                          zip(t.label, t.labeler)])
@@ -346,14 +376,17 @@ class Store:
                               "score": 1.0 * uncertain + 0.5 * (read == "") + min(row.plate_x2 - row.plate_x1, 150) / 1000})
         return sorted(items, key=lambda i: -i["score"])[:QUEUE_SIZE]
 
-    # images (cached on disk)
+    # images and clips (cached on disk)
     def image(self, kind: str, video: str, item: int, row: int | None = None) -> bytes:
-        path = self.cache / video / f"{kind}_{item}.jpg"
+        path = self.cache / video / f"{kind}_{item}.{'mp4' if kind == 'clip' else 'jpg'}"
         if path.exists():
             return path.read_bytes()
-        if kind == "strip":
-            data = track_strip(self.video_path(video), self.dets(video), item)
-        elif kind == "zoom":
+        if kind == "clip":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with self.clip_lock:  # the page asks for a clip while prefetching it: encode it once
+                return path.read_bytes() if path.exists() else track_clip(self.video_path(video), self.dets(video),
+                                                                          item, path)
+        if kind == "zoom":
             data = track_zoom(self.video_path(video), self.dets(video), item)
         elif kind == "sign":
             crops = pd.read_parquet(self.analysis / video / "sign_crops.parquet")
@@ -418,12 +451,12 @@ class Store:
                                      f"{note}; confirmed {old} ({labels.at[i, 'labeler']})")
             labels.at[i, "label"], labels.at[i, "labeler"] = label, reviewer
         else:
-            anchors = load_anchors()
+            anchors = load_anchors(self.labels_dir / "track_anchors.csv")
             card = next_card_id(video, labels, anchors)
             t = self.dets(video)
             t = t[t.track_id == track_id].sort_values("frame")
             frames = [int(t.frame.iloc[int(k * (len(t) - 1) / 3)]) for k in range(4)]
-            append_anchors(anchor_rows(card, video, t, frames))
+            append_anchors(anchor_rows(card, video, t, frames), self.labels_dir / "track_anchors.csv")
             labels = pd.concat([labels, pd.DataFrame([{"card_id": card, "video": video, "track_id": track_id,
                                                        "label": label, "labeler": reviewer, "notes": note}])],
                                ignore_index=True)
@@ -471,7 +504,7 @@ class Store:
                 else:  # a new label: remove it and the anchors written for its card
                     cards = set(labels.loc[hit, "card_id"])
                     labels = labels[~hit]
-                    anchors = load_anchors()
+                    anchors = load_anchors(self.labels_dir / "track_anchors.csv")
                     if len(anchors) and cards:
                         anchors[~anchors.card_id.isin(cards)].to_csv(self.labels_dir / "track_anchors.csv", index=False)
                 labels.to_csv(self.labels_dir / "track_labels.csv", index=False)
@@ -534,18 +567,29 @@ def clean(value):
     return value
 
 
-def make_handler(store: Store):
+def make_handler(store: Store, html: str):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args) -> None:  # quiet
             pass
 
         def send(self, body: bytes, content_type: str, status: int = 200) -> None:
+            first, last = 0, len(body) - 1
+            # byte ranges for clips: Safari plays a video only from a server that serves them
+            ranged = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "")) if content_type == "video/mp4" else None
+            if ranged and body and (ranged[1] or ranged[2]):
+                first = int(ranged[1]) if ranged[1] else max(0, len(body) - int(ranged[2]))
+                last = min(last, int(ranged[2])) if ranged[1] and ranged[2] else last
+                status = 206
             self.send_response(status)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(max(0, last - first + 1)))
+            if content_type == "video/mp4":
+                self.send_header("Accept-Ranges", "bytes")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {first}-{last}/{len(body)}")
             self.send_header("Cache-Control", "no-store" if content_type.startswith("application/json") else "max-age=3600")
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(body[first:last + 1])
 
         def json(self, payload, status: int = 200) -> None:
             self.send(json.dumps(clean(payload), default=str).encode(), "application/json", status)
@@ -555,7 +599,7 @@ def make_handler(store: Store):
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
             try:
                 if url.path == "/":
-                    self.send(PAGE.encode(), "text/html; charset=utf-8")
+                    self.send(html.encode(), "text/html; charset=utf-8")
                 elif url.path == "/api/queue":
                     kind = q.get("kind", "vehicle")
                     items = (store.vehicle_queue(q.get("mode", "new")) if kind == "vehicle" else
@@ -566,7 +610,8 @@ def make_handler(store: Store):
                     if not store.known_video(video):
                         raise KeyError(video)
                     row = int(q["row"]) if "row" in q else None
-                    self.send(store.image(q["kind"], video, int(q["item"]), row), "image/jpeg")
+                    self.send(store.image(q["kind"], video, int(q["item"]), row),
+                              "video/mp4" if q["kind"] == "clip" else "image/jpeg")
                 elif url.path == "/api/progress":
                     self.json(store.progress())
                 else:
@@ -612,7 +657,7 @@ button { cursor:pointer; } button.primary { background:var(--accent); color:#fff
 main { max-width:1180px; margin:0 auto; padding:16px; } .grid { display:grid; grid-template-columns:minmax(0,640px) 1fr; gap:16px; }
 @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
-#anim { width:100%; aspect-ratio:16/9; background-color:#000; background-size:100% auto; background-repeat:no-repeat; border-radius:6px; }
+#anim { width:100%; aspect-ratio:16/9; background:#000; border-radius:6px; display:block; }
 .zoom img, .crop img { max-width:100%; border-radius:6px; display:block; } .muted { color:var(--muted); }
 .reason { color:var(--warn); } .choices { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
 .choice { padding:6px 10px; border-radius:6px; border:1px solid var(--line); cursor:pointer; user-select:none; }
@@ -630,32 +675,38 @@ main { max-width:1180px; margin:0 auto; padding:16px; } .grid { display:grid; gr
 <script>
 const RELS = [["ego_lane","in my lane"],["adjacent_same","other lane, same way"],["oncoming","oncoming"],["parked","parked"],["cross_side","side road / other roadway"]];
 const SIGNS = __SIGNS__;
-let kind = "vehicle", queue = [], pos = 0, timer = null;
+// STATIC: the exported copy (python -m bikesafe.review --export), read from files with no server behind it; decisions
+// are kept in this browser until downloaded from the Progress tab
+const STATIC = __STATIC__;
+let kind = "vehicle", queue = [], pos = 0, saved = [];
 const $ = s => document.querySelector(s);
 const reviewer = () => $("#reviewer").value.trim() || "reviewer";
-try { $("#reviewer").value = localStorage.getItem("reviewer") || ""; } catch (e) {}
+try { $("#reviewer").value = localStorage.getItem("reviewer") || ""; saved = JSON.parse(localStorage.getItem("decisions") || "[]"); } catch (e) {}
+const keep = () => { try { localStorage.setItem("decisions", JSON.stringify(saved)); } catch (e) {} };
 $("#reviewer").addEventListener("change", () => { try { localStorage.setItem("reviewer", $("#reviewer").value); } catch (e) {} });
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => { document.querySelectorAll(".tab").forEach(x => x.classList.remove("on")); t.classList.add("on"); kind = t.dataset.kind; load(); });
 $("#mode").onchange = load;
-const img = (k, it, extra="") => `/api/img?kind=${k}&video=${encodeURIComponent(it.video)}&item=${it.item}${extra}`;
+const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" ? "mp4" : "jpg"}`
+  : `/api/img?kind=${k}&video=${encodeURIComponent(it.video)}&item=${it.item}${extra}`;
 async function load() {
-  clearInterval(timer);
   if (kind === "progress") return progress();
   $("#main").innerHTML = '<p class="muted">Loading the queue...</p>';
-  const r = await fetch(`/api/queue?kind=${kind}&mode=${$("#mode").value}`); queue = await r.json(); pos = 0; show();
+  const r = await fetch(STATIC ? `queue_${kind === "vehicle" ? "vehicle_" + $("#mode").value : kind}.json` : `/api/queue?kind=${kind}&mode=${$("#mode").value}`);
+  queue = await r.json(); pos = 0;
+  if (STATIC && Array.isArray(queue)) queue = queue.filter(it => !saved.some(s => s.kind === it.kind && s.video === it.video && s.item === it.item));
+  show();
 }
-function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { new Image().src = img("strip", it); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else { new Image().src = img("plate", it); } } }
+function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else { new Image().src = img("plate", it); } } }
 function show() {
-  clearInterval(timer);
   if (queue.error) { $("#main").innerHTML = `<p>${queue.error}</p>`; return; }
-  if (pos >= queue.length) { $("#main").innerHTML = '<div class="card"><p>Queue done. Reload for more, or Retrain under Progress.</p></div>'; return; }
+  if (pos >= queue.length) { $("#main").innerHTML = `<div class="card"><p>Queue done. ${STATIC ? "Download your decisions under Progress." : "Reload for more, or Retrain under Progress."}</p></div>`; return; }
   const it = queue[pos]; $("#status").textContent = `${pos + 1} / ${queue.length}`;
   if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else showPlate(it);
   prefetch();
 }
 function showVehicle(it) {
   const probs = Object.entries(it.proba).sort((a,b) => b[1]-a[1]).map(([k,v]) => `<tr><td>${k}</td><td style="width:140px"><div class="bar" style="width:${Math.round(v*100)}%"></div></td><td>${Math.round(v*100)}%</td></tr>`).join("");
-  $("#main").innerHTML = `<div class="grid"><div class="card"><div id="anim"></div><p class="muted">${it.video} &middot; t=${it.t}s &middot; closest ${it.z_min} m, ${it.x} m to the side &middot; ${it.duration} s</p></div>
+  $("#main").innerHTML = `<div class="grid"><div class="card"><video id="anim" src="${img("clip", it)}" autoplay muted loop playsinline></video><p class="muted">${it.video} &middot; t=${it.t}s &middot; closest ${it.z_min} m, ${it.x} m to the side &middot; ${it.duration} s</p></div>
   <div class="card"><div class="zoom"><img src="${img("zoom", it)}" alt="vehicle"></div>
   <p>Model: <b>${it.model}</b>${it.current ? ` &middot; label now: <b>${it.current}</b>` : ""} &middot; rules: ${it.rule}</p>
   ${it.reasons ? `<p class="reason">${it.reasons}</p>` : ""}<table>${probs}</table>
@@ -663,9 +714,6 @@ function showVehicle(it) {
   <span class="choice" data-v="unclear"><kbd>U</kbd>unclear</span><span class="choice" data-v="not_vehicle"><kbd>N</kbd>not a vehicle</span>
   <span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div>
   <p class="muted">Enter accepts the model &middot; Z undoes the last decision</p></div></div>`;
-  const anim = $("#anim"), src = img("strip", it); const probe = new Image();
-  probe.onload = () => { const n = Math.max(1, Math.round(probe.height / (probe.width * 9 / 16))); anim.style.backgroundImage = `url(${src})`; anim.style.backgroundSize = `100% ${n*100}%`; let f = 0; timer = setInterval(() => { anim.style.backgroundPosition = `0 ${n > 1 ? f/(n-1)*100 : 0}%`; f = (f + 1) % n; }, 380); };
-  probe.src = src;
   document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
 }
 function showSign(it) {
@@ -692,6 +740,7 @@ async function decide(v) {
   if (it.kind === "plate") { label = v === "skip" ? "skip" : "plate"; out.text = v === "unreadable" ? "" : text; out.model_text = it.model; out.model = "plate"; }
   else if (it.kind === "sign") { out.text = text; out.model_text = it.text; }
   out.label = label;
+  if (STATIC) { saved.push({...out, time: new Date().toISOString()}); keep(); pos += 1; show(); return; }
   const r = await (await fetch("/api/label", {method:"POST", body: JSON.stringify(out)})).json();
   if (r.error) { alert(r.error); return; } pos += 1; show();
 }
@@ -710,8 +759,20 @@ document.addEventListener("keydown", e => {
   else if (kind === "sign" && k === "t") { e.preventDefault(); $("#text").focus(); }
   else if (kind === "sign") { const hit = SIGNS.find(([, key]) => key === k); if (hit) decide(hit[0]); }
 });
-async function undo() { const r = await (await fetch("/api/undo", {method:"POST", body: JSON.stringify({reviewer: reviewer()})})).json(); if (r.ok && pos > 0) { pos -= 1; show(); } }
+async function undo() {
+  if (STATIC) { if (saved.length && pos > 0) { saved.pop(); keep(); pos -= 1; show(); } return; }
+  const r = await (await fetch("/api/undo", {method:"POST", body: JSON.stringify({reviewer: reviewer()})})).json(); if (r.ok && pos > 0) { pos -= 1; show(); }
+}
+function staticProgress() {
+  $("#main").innerHTML = `<div class="card"><p>A copy of the review page that needs no server: the queues are as they were when it was made, and
+    your decisions stay in this browser - <b>${saved.length}</b> so far.</p>
+    <p><button class="primary" id="dl">Download decisions</button> <button id="clear">Clear them</button></p>
+    <p class="muted">To add them to the labels: <code>python -m bikesafe.review --import decisions.json</code>, then Retrain.</p></div>`;
+  $("#dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(saved, null, 1)], {type: "application/json"})); a.download = "decisions.json"; a.click(); };
+  $("#clear").onclick = () => { if (confirm("Delete the decisions kept in this browser?")) { saved = []; keep(); staticProgress(); } };
+}
 async function progress() {
+  if (STATIC) return staticProgress();
   const p = await (await fetch("/api/progress")).json();
   const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${k}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
     ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${c.model}</td><td>${c.human}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
@@ -725,6 +786,49 @@ load();
 """
 
 
+def page(static: bool = False) -> str:
+    keys = "abcdefghijklmnopqrstuvwxyz"
+    shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
+    return PAGE.replace("__SIGNS__", json.dumps(shortcuts)).replace("__STATIC__", json.dumps(static))
+
+
+MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"]}
+
+
+def export(store: Store, out: Path, per_queue: int) -> None:
+    """The page as files that need no server (GitHub Pages, any web host): the first `per_queue` items of each queue
+    with their clips and crops. Decisions made there stay in the viewer's browser until downloaded (Progress tab);
+    --import adds them to the labels."""
+    shutil.rmtree(out / "media", ignore_errors=True)
+    queues = {"vehicle_new": store.vehicle_queue("new"), "vehicle_verify": store.vehicle_queue("verify"),
+              "sign": store.sign_queue(), "plate": store.plate_queue()}
+    for name, items in queues.items():
+        kept = []
+        for it in items[:per_queue]:
+            files = {kind: store.image(kind, it["video"], it["item"], it.get("row")) for kind in MEDIA[it["kind"]]}
+            if not all(files.values()):
+                continue
+            for kind, data in files.items():
+                path = out / "media" / it["video"] / f"{kind}_{it['item']}.{'mp4' if kind == 'clip' else 'jpg'}"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            kept.append(it)
+        (out / f"queue_{name}.json").write_text(json.dumps(clean(kept), default=str), encoding="utf-8")
+        print(f"{name}: {len(kept)} items", flush=True)
+    (out / "index.html").write_text(page(static=True), encoding="utf-8")
+
+
+def import_decisions(store: Store, path: Path) -> int:
+    """Decisions downloaded from an exported page, saved as if they had been made here (reviewer names kept)."""
+    decisions = json.loads(path.read_text(encoding="utf-8"))
+    unknown = {d["video"] for d in decisions if not store.known_video(d["video"])}
+    if unknown:
+        raise SystemExit(f"rides not in {store.perception}: {', '.join(sorted(unknown))}")
+    for d in decisions:
+        store.save(d)
+    return len(decisions)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
@@ -734,14 +838,22 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--labels", type=Path, default=LABELS_DIR,
                         help="Where decisions are saved (track_labels.csv, sign_labels.csv, ...; default data/typology)")
+    parser.add_argument("--export", type=Path, default=None,
+                        help="Write the page and its queues as static files to this folder instead of serving it")
+    parser.add_argument("--per-queue", type=int, default=20, help="Items per queue in the --export copy")
+    parser.add_argument("--import", dest="import_", type=Path, default=None,
+                        help="Add the decisions downloaded from an exported page (decisions.json) to the labels")
     args = parser.parse_args()
     args.labels.mkdir(parents=True, exist_ok=True)
     store = Store(args.analysis, args.perception, args.corpus, args.videos, labels_dir=args.labels)
-    keys = "abcdefghijklmnopqrstuvwxyz"
-    shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
-    global PAGE
-    PAGE = PAGE.replace("__SIGNS__", json.dumps(shortcuts))
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(store))
+    if args.export is not None:
+        export(store, args.export, args.per_queue)
+        print(f"wrote {args.export / 'index.html'}")
+        return
+    if args.import_ is not None:
+        print(f"added {import_decisions(store, args.import_)} decisions to {args.labels}")
+        return
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(store, page()))
     print(f"review at http://127.0.0.1:{args.port}  ({len(store.tracks)} tracks from {args.corpus})", flush=True)
     server.serve_forever()
 
