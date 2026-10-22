@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bike route vehicle typology</title>
+<style>
+:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#deded9; --accent:#2b6cb0; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94;
+  --line:#33332f; --accent:#63a4e8; } }
+* { box-sizing:border-box; }
+body { margin:0; font:16px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+main { max-width:1100px; margin:0 auto; padding:24px 16px 48px; }
+h1 { font-size:28px; margin:0 0 6px; } h2 { font-size:19px; margin:0 0 10px; }
+a { color:var(--accent); } .muted { color:var(--muted); font-size:14px; }
+.lead { max-width:760px; margin:0 0 14px; }
+.keys { display:flex; flex-wrap:wrap; gap:6px 16px; margin:0 0 24px; font-size:14px; }
+.key i { display:inline-block; width:14px; height:14px; border-radius:3px; margin-right:6px; vertical-align:-2px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin:0 0 28px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+.card h2 { font-size:17px; } .card p { margin:0 0 10px; }
+.button { display:inline-block; padding:7px 14px; border-radius:6px; background:var(--accent); color:#fff;
+  text-decoration:none; font-weight:600; }
+.demo { margin:0 0 32px; }
+video { width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; display:block; }
+</style></head><body><main>
+<h1>Bike route vehicle typology</h1>
+<p class="lead">From a handlebar camera, every vehicle around the rider and how it relates to the rider, with the
+riding context, traffic signals, signs (typed and read) and licence plates. Box colours:</p>
+<div class="keys"><span class="key"><i style="background:#eb2828"></i>in my lane</span><span class="key"><i style="background:#ff9600"></i>other lane, same way</span><span class="key"><i style="background:#c83cc8"></i>oncoming</span><span class="key"><i style="background:#aaaaaa"></i>parked</span><span class="key"><i style="background:#1eaae6"></i>side road / other roadway</span></div>
+<div class="cards">
+  <div class="card"><h2>Review page</h2><p>The model's answers - vehicles, signs, plates - most likely errors first.
+  Confirm or correct with one key; decisions stay in your browser until you download them.</p>
+  <a class="button" href="review/">Open the review page</a></div>
+  <div class="card"><h2>Your own video</h2><p>Runs in Google Colab on a free GPU: nothing to install. Results go to
+  your Google Drive.</p><a class="button" href="https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb">Open in Colab</a></div>
+  <div class="card"><h2>Code and results</h2><p>Per-ride tables, accuracy and limitations, and the pipeline.</p>
+  <a class="button" href="https://github.com/Robertn02/Car-detection">GitHub</a></div>
+</div>
+<section class="demo" id="overlay_006_bikelane_440s">
+  <h2>Painted bike lane</h2>
+  <video controls playsinline preload="metadata" poster="demos/overlay_006_bikelane_440s.jpg" src="demos/overlay_006_bikelane_440s.mp4"></video>
+  <p class="muted">Ride 6, from 7:20 &middot; 60 s at the camera's full size and
+  frame rate &middot; <a href="demos/overlay_006_bikelane_440s.mp4" download>download</a></p>
+</section>
+<section class="demo" id="overlay_005_following_280s">
+  <h2>Following a car from a red light</h2>
+  <video controls playsinline preload="metadata" poster="demos/overlay_005_following_280s.jpg" src="demos/overlay_005_following_280s.mp4"></video>
+  <p class="muted">Ride 5, from 4:40 &middot; 60 s at the camera's full size and
+  frame rate &middot; <a href="demos/overlay_005_following_280s.mp4" download>download</a></p>
+</section>
+<section class="demo" id="overlay_006_parked_700s">
+  <h2>Parked rows, then a red light</h2>
+  <video controls playsinline preload="metadata" poster="demos/overlay_006_parked_700s.jpg" src="demos/overlay_006_parked_700s.mp4"></video>
+  <p class="muted">Ride 6, from 11:40 &middot; 60 s at the camera's full size and
+  frame rate &middot; <a href="demos/overlay_006_parked_700s.mp4" download>download</a></p>
+</section>
+</main></body></html>

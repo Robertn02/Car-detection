@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annotation review</title>
+<style>
+:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#deded9; --accent:#2b6cb0; --warn:#b7791f;
+  --ok:#2f855a; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94;
+  --line:#33332f; --accent:#63a4e8; --warn:#e0a54a; --ok:#5fc08c; } }
+* { box-sizing:border-box; } body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
+  background:var(--panel); flex-wrap:wrap; }
+header h1 { font-size:16px; margin:0 12px 0 0; } .tab { padding:6px 12px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
+.tab.on { border-color:var(--line); background:var(--bg); font-weight:600; }
+input, select, button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:5px 9px; }
+button { cursor:pointer; } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+main { max-width:1180px; margin:0 auto; padding:16px; } .grid { display:grid; grid-template-columns:minmax(0,640px) 1fr; gap:16px; }
+@media (max-width:900px) { .grid { grid-template-columns:1fr; } }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+#anim { width:100%; aspect-ratio:16/9; background:#000; border-radius:6px; display:block; }
+.zoom img, .crop img { max-width:100%; border-radius:6px; display:block; } .muted { color:var(--muted); }
+.reason { color:var(--warn); } .choices { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+.choice { padding:6px 10px; border-radius:6px; border:1px solid var(--line); cursor:pointer; user-select:none; }
+.choice.model { outline:2px solid var(--accent); } .choice kbd { font-size:12px; color:var(--muted); margin-right:4px; }
+.bar { height:8px; background:var(--accent); border-radius:4px; } table { border-collapse:collapse; } td, th { padding:3px 8px; border-bottom:1px solid var(--line); text-align:left; }
+.status { margin-left:auto; } .done { color:var(--ok); }
+</style></head><body>
+<header><h1>Annotation review</h1>
+<span class="tab on" data-kind="vehicle">Vehicles</span><span class="tab" data-kind="sign">Signs</span>
+<span class="tab" data-kind="plate">Plates</span><span class="tab" data-kind="progress">Progress</span>
+<select id="mode"><option value="new">new: likely errors first</option><option value="verify">verify existing labels</option></select>
+<label>Reviewer <input id="reviewer" size="12" placeholder="your name"></label>
+<span class="status muted" id="status"></span></header>
+<main id="main"></main>
+<script>
+const RELS = [["ego_lane","in my lane"],["adjacent_same","other lane, same way"],["oncoming","oncoming"],["parked","parked"],["cross_side","side road / other roadway"]];
+const SIGNS = [["stop", "a"], ["yield", "b"], ["speed_limit", "c"], ["do_not_enter", "d"], ["one_way", "e"], ["no_turn", "f"], ["parking", "g"], ["bike", "h"], ["pedestrian", "i"], ["warning", "j"], ["street_name", "k"], ["guide", "l"], ["lane_use", "m"], ["bus_stop", "n"], ["roadwork", "o"], ["other_sign", "p"], ["not_a_sign", "q"]];
+// STATIC: the exported copy (python -m bikesafe.review --export), read from files with no server behind it; decisions
+// are kept in this browser until downloaded from the Progress tab
+const STATIC = true;
+let kind = "vehicle", queue = [], pos = 0, saved = [];
+const $ = s => document.querySelector(s);
+const reviewer = () => $("#reviewer").value.trim() || "reviewer";
+try { $("#reviewer").value = localStorage.getItem("reviewer") || ""; saved = JSON.parse(localStorage.getItem("decisions") || "[]"); } catch (e) {}
+const keep = () => { try { localStorage.setItem("decisions", JSON.stringify(saved)); } catch (e) {} };
+$("#reviewer").addEventListener("change", () => { try { localStorage.setItem("reviewer", $("#reviewer").value); } catch (e) {} });
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => { document.querySelectorAll(".tab").forEach(x => x.classList.remove("on")); t.classList.add("on"); kind = t.dataset.kind; load(); });
+$("#mode").onchange = load;
+const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" ? "mp4" : "jpg"}`
+  : `/api/img?kind=${k}&video=${encodeURIComponent(it.video)}&item=${it.item}${extra}`;
+async function load() {
+  if (kind === "progress") return progress();
+  $("#main").innerHTML = '<p class="muted">Loading the queue...</p>';
+  const r = await fetch(STATIC ? `queue_${kind === "vehicle" ? "vehicle_" + $("#mode").value : kind}.json` : `/api/queue?kind=${kind}&mode=${$("#mode").value}`);
+  queue = await r.json(); pos = 0;
+  if (STATIC && Array.isArray(queue)) queue = queue.filter(it => !saved.some(s => s.kind === it.kind && s.video === it.video && s.item === it.item));
+  show();
+}
+function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else { new Image().src = img("plate", it); } } }
+function show() {
+  if (queue.error) { $("#main").innerHTML = `<p>${queue.error}</p>`; return; }
+  if (pos >= queue.length) { $("#main").innerHTML = `<div class="card"><p>Queue done. ${STATIC ? "Download your decisions under Progress." : "Reload for more, or Retrain under Progress."}</p></div>`; return; }
+  const it = queue[pos]; $("#status").textContent = `${pos + 1} / ${queue.length}`;
+  if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else showPlate(it);
+  prefetch();
+}
+function showVehicle(it) {
+  const probs = Object.entries(it.proba).sort((a,b) => b[1]-a[1]).map(([k,v]) => `<tr><td>${k}</td><td style="width:140px"><div class="bar" style="width:${Math.round(v*100)}%"></div></td><td>${Math.round(v*100)}%</td></tr>`).join("");
+  $("#main").innerHTML = `<div class="grid"><div class="card"><video id="anim" src="${img("clip", it)}" autoplay muted loop playsinline></video><p class="muted">${it.video} &middot; t=${it.t}s &middot; closest ${it.z_min} m, ${it.x} m to the side &middot; ${it.duration} s</p></div>
+  <div class="card"><div class="zoom"><img src="${img("zoom", it)}" alt="vehicle"></div>
+  <p>Model: <b>${it.model}</b>${it.current ? ` &middot; label now: <b>${it.current}</b>` : ""} &middot; rules: ${it.rule}</p>
+  ${it.reasons ? `<p class="reason">${it.reasons}</p>` : ""}<table>${probs}</table>
+  <div class="choices">${RELS.map(([k,n],i) => `<span class="choice ${k===it.model?"model":""}" data-v="${k}"><kbd>${i+1}</kbd>${n}</span>`).join("")}
+  <span class="choice" data-v="unclear"><kbd>U</kbd>unclear</span><span class="choice" data-v="not_vehicle"><kbd>N</kbd>not a vehicle</span>
+  <span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div>
+  <p class="muted">Enter accepts the model &middot; Z undoes the last decision</p></div></div>`;
+  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
+}
+function showSign(it) {
+  $("#main").innerHTML = `<div class="grid"><div class="card crop"><img src="${img("signctx", it, `&row=${it.row}`)}" alt="context"></div>
+  <div class="card"><div class="crop"><img src="${img("sign", it, `&row=${it.row}`)}" alt="sign"></div>
+  <p>Model: <b>${it.model}</b> (${Math.round(it.model_conf*100)}%) &middot; ${it.h} px tall &middot; ${it.video} t=${it.t}s</p>
+  <label>Text <input id="text" size="34" value="${(it.text||"").replace(/"/g,"&quot;")}"></label>
+  <div class="choices">${SIGNS.map(([k,key]) => `<span class="choice ${k===it.model?"model":""}" data-v="${k}"><kbd>${key}</kbd>${k.replace(/_/g," ")}</span>`).join("")}
+  <span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div><p class="muted">Enter accepts the model's type with the text as written &middot; T edits the text</p></div></div>`;
+  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
+}
+function showPlate(it) {
+  $("#main").innerHTML = `<div class="grid"><div class="card crop"><img src="${img("plate", it)}" alt="plate"></div>
+  <div class="card"><p>Read: <b>${it.model || "(nothing confident)"}</b> &middot; reads: <span class="muted">${it.reads}</span></p>
+  <label>Plate <input id="text" size="12" value="${it.model}"></label>
+  <div class="choices"><span class="choice model" data-v="read"><kbd>Enter</kbd>save text</span><span class="choice" data-v="unreadable"><kbd>X</kbd>unreadable</span><span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div></div></div>`;
+  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
+  $("#text").focus();
+}
+async function decide(v) {
+  const it = queue[pos]; if (!it) return;
+  const text = $("#text") ? $("#text").value : "";
+  let label = v, out = {kind: it.kind, video: it.video, item: it.item, row: it.row, model: it.model, model_conf: it.model_conf || Math.max(...Object.values(it.proba || {0:0})), reviewer: reviewer()};
+  if (it.kind === "plate") { label = v === "skip" ? "skip" : "plate"; out.text = v === "unreadable" ? "" : text; out.model_text = it.model; out.model = "plate"; }
+  else if (it.kind === "sign") { out.text = text; out.model_text = it.text; }
+  out.label = label;
+  if (STATIC) { saved.push({...out, time: new Date().toISOString()}); keep(); pos += 1; show(); return; }
+  const r = await (await fetch("/api/label", {method:"POST", body: JSON.stringify(out)})).json();
+  if (r.error) { alert(r.error); return; } pos += 1; show();
+}
+document.addEventListener("keydown", e => {
+  if (kind === "progress" || !queue[pos]) return;
+  const typing = document.activeElement && document.activeElement.id === "text";
+  if (kind === "plate") { if (e.key === "Enter") decide("read"); else if (!typing && e.key.toLowerCase() === "x") decide("unreadable"); else if (!typing && e.key.toLowerCase() === "s") decide("skip"); return; }
+  if (typing) { if (e.key === "Enter") { decide(queue[pos].model); } if (e.key === "Escape") document.activeElement.blur(); return; }
+  const k = e.key.toLowerCase();
+  if (e.key === "Enter") decide(queue[pos].model);
+  else if (k === "z") undo();
+  else if (k === "s") decide("skip");
+  else if (kind === "vehicle" && "12345".includes(k)) decide(RELS[+k - 1][0]);
+  else if (kind === "vehicle" && k === "u") decide("unclear");
+  else if (kind === "vehicle" && k === "n") decide("not_vehicle");
+  else if (kind === "sign" && k === "t") { e.preventDefault(); $("#text").focus(); }
+  else if (kind === "sign") { const hit = SIGNS.find(([, key]) => key === k); if (hit) decide(hit[0]); }
+});
+async function undo() {
+  if (STATIC) { if (saved.length && pos > 0) { saved.pop(); keep(); pos -= 1; show(); } return; }
+  const r = await (await fetch("/api/undo", {method:"POST", body: JSON.stringify({reviewer: reviewer()})})).json(); if (r.ok && pos > 0) { pos -= 1; show(); }
+}
+function staticProgress() {
+  $("#main").innerHTML = `<div class="card"><p>A copy of the review page that needs no server: the queues are as they were when it was made, and
+    your decisions stay in this browser - <b>${saved.length}</b> so far.</p>
+    <p><button class="primary" id="dl">Download decisions</button> <button id="clear">Clear them</button></p>
+    <p class="muted">To add them to the labels: <code>python -m bikesafe.review --import decisions.json</code>, then Retrain.</p></div>`;
+  $("#dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(saved, null, 1)], {type: "application/json"})); a.download = "decisions.json"; a.click(); };
+  $("#clear").onclick = () => { if (confirm("Delete the decisions kept in this browser?")) { saved = []; keep(); staticProgress(); } };
+}
+async function progress() {
+  if (STATIC) return staticProgress();
+  const p = await (await fetch("/api/progress")).json();
+  const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${k}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
+    ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${c.model}</td><td>${c.human}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
+  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${k} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
+    <p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${p.retrain.state}: ${p.retrain.log}</span></p></div>${blocks}`;
+  $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; };
+  if (p.retrain.state === "running") setTimeout(progress, 5000);
+}
+load();
+</script></body></html>
