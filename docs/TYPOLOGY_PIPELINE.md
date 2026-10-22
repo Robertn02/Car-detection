@@ -246,6 +246,10 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
    - The project page has a copy that needs no server (`bikesafe.review --export`): the first 20 items of each queue
      with their clips and crops, as they were when it was made. Decisions made there stay in the viewer's browser
      until downloaded from its Progress tab; `bikesafe.review --import decisions.json` adds them to the labels.
+   - In the Colab notebook the page saves decisions in the run's Drive folder (`--labels`) and offers no Retrain:
+     the models learn from the labelled rides, which are on the machine that ran the corpus. There,
+     `bikesafe.review --import "G:/My Drive/bikesafe_runs/<video>"` adds the run's ride (perception, analysis,
+     results) and its decisions (cards renumbered, since each run numbers its own), and Retrain learns from them.
    - *Vehicles.* Each vehicle is shown as a looping clip of its track at the video's frame rate (its box magenta, the
      others grey; tracks over 8 s play faster) with a zoom,
      the model's probabilities and the rule baseline's answer. Keys 1-5 pick the relation, Enter accepts the model, U

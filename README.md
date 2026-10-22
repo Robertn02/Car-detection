@@ -63,6 +63,8 @@ Shows the model's answers - vehicles, signs, plates - most likely errors first. 
 
 A copy that needs no server is on the [project page](https://robertn02.github.io/Car-detection/review/): decisions made there stay in the browser until
 downloaded (Progress tab); `python -m bikesafe.review --import decisions.json` adds them to the labels.
+Decisions made in Colab are saved with the run on Drive; `python -m bikesafe.review --import "<run folder>"` adds the
+run and its decisions here, then Retrain.
 
 ## Run locally
 
