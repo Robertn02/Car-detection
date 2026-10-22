@@ -15,7 +15,8 @@ Nothing to install - it runs in Google Colab with a free GPU:
 3. Scroll down: the overlay clip and the results tables appear at the end, and are saved to
    `My Drive/bikesafe_runs/`.
 
-About 10 minutes for a 3-minute clip (the default; set `MINUTES = 0` for the whole video).
+About 25 minutes for a 3-minute clip (the default) on the free T4, 15 with Colab Pro's L4; set `MINUTES = 0` for the
+whole video (a 20-minute ride takes about 1.5 hours on an L4).
 
 ## Demos
 
