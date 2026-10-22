@@ -732,8 +732,11 @@ def main() -> None:
     parser.add_argument("--corpus", type=Path, default=ROOT / "results" / "corpus", help="Where tracks_typed.csv are")
     parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--labels", type=Path, default=LABELS_DIR,
+                        help="Where decisions are saved (track_labels.csv, sign_labels.csv, ...; default data/typology)")
     args = parser.parse_args()
-    store = Store(args.analysis, args.perception, args.corpus, args.videos)
+    args.labels.mkdir(parents=True, exist_ok=True)
+    store = Store(args.analysis, args.perception, args.corpus, args.videos, labels_dir=args.labels)
     keys = "abcdefghijklmnopqrstuvwxyz"
     shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
     global PAGE
