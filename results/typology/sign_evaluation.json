@@ -1,0 +1,5 @@
+{
+  "trained": false,
+  "n_labels": 38,
+  "reason": "reviewed signs from fewer than two rides"
+}

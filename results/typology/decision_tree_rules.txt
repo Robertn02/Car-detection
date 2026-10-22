@@ -1,55 +1,67 @@
-|--- v_along_ratio <= 0.36
-|   |--- ego_speed_med <= 0.13
-|   |   |--- v_along_med <= -5.52
-|   |   |   |--- class: oncoming
-|   |   |--- v_along_med >  -5.52
-|   |   |   |--- p_separated_path <= 0.05
-|   |   |   |   |--- view_rear <= 0.00
-|   |   |   |   |   |--- class: cross_side
-|   |   |   |   |--- view_rear >  0.00
-|   |   |   |   |   |--- class: cross_side
-|   |   |   |--- p_separated_path >  0.05
-|   |   |   |   |--- class: cross_side
-|   |--- ego_speed_med >  0.13
-|   |   |--- depth_x_at_min_z <= 1.67
-|   |   |   |--- depth_x_at_min_z <= -8.27
-|   |   |   |   |--- x_center_med <= -23.99
+|--- v_along_flow_ratio <= 0.21
+|   |--- x_center_p90 <= -1.58
+|   |   |--- v_along_p90 <= 3.55
+|   |   |   |--- x_center_med <= -23.99
+|   |   |   |   |--- frac_heading_crossing <= 0.29
 |   |   |   |   |   |--- class: adjacent_same
-|   |   |   |   |--- x_center_med >  -23.99
+|   |   |   |   |--- frac_heading_crossing >  0.29
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |--- x_center_med >  -23.99
+|   |   |   |   |--- v_lat_med <= -0.71
 |   |   |   |   |   |--- class: oncoming
-|   |   |   |--- depth_x_at_min_z >  -8.27
-|   |   |   |   |--- view_side <= 0.37
-|   |   |   |   |   |--- class: adjacent_same
-|   |   |   |   |--- view_side >  0.37
+|   |   |   |   |--- v_lat_med >  -0.71
+|   |   |   |   |   |--- class: oncoming
+|   |   |--- v_along_p90 >  3.55
+|   |   |   |--- depth_z_min <= 11.44
+|   |   |   |   |--- world_speed_ratio <= 0.45
 |   |   |   |   |   |--- class: parked
-|   |   |--- depth_x_at_min_z >  1.67
-|   |   |   |--- depth_x_at_min_z <= 11.74
-|   |   |   |   |--- depth_z_min <= 13.76
+|   |   |   |   |--- world_speed_ratio >  0.45
 |   |   |   |   |   |--- class: parked
-|   |   |   |   |--- depth_z_min >  13.76
-|   |   |   |   |   |--- class: parked
-|   |   |   |--- depth_x_at_min_z >  11.74
-|   |   |   |   |--- class: cross_side
-|--- v_along_ratio >  0.36
-|   |--- frac_close_pass <= 0.97
-|   |   |--- depth_z_min <= 2.14
-|   |   |   |--- v_along_med <= 4.82
-|   |   |   |   |--- class: adjacent_same
-|   |   |   |--- v_along_med >  4.82
-|   |   |   |   |--- class: adjacent_same
-|   |   |--- depth_z_min >  2.14
-|   |   |   |--- world_speed_ratio <= 1.51
-|   |   |   |   |--- world_speed_ratio <= 1.05
-|   |   |   |   |   |--- class: parked
-|   |   |   |   |--- world_speed_ratio >  1.05
-|   |   |   |   |   |--- class: ego_lane
-|   |   |   |--- world_speed_ratio >  1.51
-|   |   |   |   |--- v_lat_ratio <= 2.28
-|   |   |   |   |   |--- class: adjacent_same
-|   |   |   |   |--- v_lat_ratio >  2.28
+|   |   |   |--- depth_z_min >  11.44
+|   |   |   |   |--- grid_proj_p10 <= 1.03
 |   |   |   |   |   |--- class: cross_side
+|   |   |   |   |--- grid_proj_p10 >  1.03
+|   |   |   |   |   |--- class: adjacent_same
+|   |--- x_center_p90 >  -1.58
+|   |   |--- ego_speed_med <= 2.35
+|   |   |   |--- p_bike_lane <= 0.21
+|   |   |   |   |--- frac_heading_opposite <= 0.72
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |   |--- frac_heading_opposite >  0.72
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |--- p_bike_lane >  0.21
+|   |   |   |   |--- class: parked
+|   |   |--- ego_speed_med >  2.35
+|   |   |   |--- depth_x_at_min_z <= 1.67
+|   |   |   |   |--- view_rear <= 0.37
+|   |   |   |   |   |--- class: parked
+|   |   |   |   |--- view_rear >  0.37
+|   |   |   |   |   |--- class: adjacent_same
+|   |   |   |--- depth_x_at_min_z >  1.67
+|   |   |   |   |--- depth_x_at_min_z <= 12.24
+|   |   |   |   |   |--- class: parked
+|   |   |   |   |--- depth_x_at_min_z >  12.24
+|   |   |   |   |   |--- class: cross_side
+|--- v_along_flow_ratio >  0.21
+|   |--- frac_close_pass <= 0.97
+|   |   |--- heading_fit_abs <= 59.97
+|   |   |   |--- closing_ratio_p10 <= 0.23
+|   |   |   |   |--- v_lat_flow_absmed <= 0.29
+|   |   |   |   |   |--- class: adjacent_same
+|   |   |   |   |--- v_lat_flow_absmed >  0.29
+|   |   |   |   |   |--- class: ego_lane
+|   |   |   |--- closing_ratio_p10 >  0.23
+|   |   |   |   |--- depth_x_at_min_z <= 1.97
+|   |   |   |   |   |--- class: ego_lane
+|   |   |   |   |--- depth_x_at_min_z >  1.97
+|   |   |   |   |   |--- class: parked
+|   |   |--- heading_fit_abs >  59.97
+|   |   |   |--- ego_moving_frac <= 0.42
+|   |   |   |   |--- world_heading_abs <= 74.19
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |   |--- world_heading_abs >  74.19
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |--- ego_moving_frac >  0.42
+|   |   |   |   |--- class: cross_side
 |   |--- frac_close_pass >  0.97
-|   |   |--- view_front <= 0.16
-|   |   |   |--- class: ego_lane
-|   |   |--- view_front >  0.16
-|   |   |   |--- class: oncoming
+|   |   |--- class: ego_lane

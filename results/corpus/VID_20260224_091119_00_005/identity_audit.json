@@ -1,0 +1,9 @@
+{
+  "tracks_with_plate": 220,
+  "vehicles_with_plate": 185,
+  "vehicles_with_two_plates": 3,
+  "same_plate_joined_pairs": 148,
+  "same_plate_split_pairs": 103,
+  "same_plate_split_within_gap": 24,
+  "vehicles_seen_again_later": 6
+}
