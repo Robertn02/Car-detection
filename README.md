@@ -1,72 +1,88 @@
 # Bike-route vehicle typology
 
-How safe does a bike route feel? From a handlebar camera, the pipeline decides for every vehicle how it relates to
-the rider - **in my lane**, **other lane, same way**, **oncoming**, **parked**, **side road / crossing** - and reports,
-per ride and per second (joinable to GPS by timestamp), the exposure to each kind of traffic, the riding context
-(separated path, painted bike lane, shared road), traffic signals, the traffic signs passed - typed and read, with the
-posted speed limit - the licence plate of each vehicle, and events such as overtakes, close passes, stop signs and
-waits at red lights.
+From a handlebar camera video, finds every vehicle and how it relates to the rider - **in my lane**, **other lane,
+same way**, **oncoming**, **parked**, **side road / crossing** - plus the riding context, traffic signals, traffic
+signs (typed and read), licence plates, and events such as overtakes, close passes and red-light waits.
 
-## Run it
+## Try it on your video
 
-On a machine with an NVIDIA GPU (Linux or Windows):
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb)
+
+Nothing to install - it runs in Google Colab with a free GPU:
+
+1. Click **Open in Colab**, then **Runtime > Run all**.
+2. Allow Google Drive access, then pick your video (or give its Drive path in the first cell).
+3. Scroll down: the overlay clip and the results tables appear at the end, and are saved to
+   `My Drive/bikesafe_runs/`.
+
+About 10 minutes for a 3-minute clip (the default; set `MINUTES = 0` for the whole video).
+
+## Demos
+
+| Painted bike lane | Following a car from a red light | Parked rows, then a red light |
+| --- | --- | --- |
+| [![bike lane](demos/overlay_006_bikelane_440s.jpg)](demos/overlay_006_bikelane_440s.mp4) | [![following](demos/overlay_005_following_280s.jpg)](demos/overlay_005_following_280s.mp4) | [![parked](demos/overlay_006_parked_700s.jpg)](demos/overlay_006_parked_700s.mp4) |
+
+Box colours: red in my lane, orange other lane, magenta oncoming, grey parked, blue side road.
+
+## Outputs
+
+Per ride, in [`results/corpus/`](results/corpus) ([every column explained](docs/OUTPUTS.md)):
+
+| File | One row per | Start here for |
+| --- | --- | --- |
+| `vehicles.csv` | vehicle | relation, how close it came, plate, what to double-check |
+| `timeline_1s.csv` | second | riding context, speed, traffic in view, signal, signs (local time, joins to GPS) |
+| `signs.csv` | sign or signal | sign type and text, posted speed limit |
+| `events.csv` | event | overtakes, close passes, crossing traffic, stop signs, red-light waits |
+
+## Results
+
+Six rides, 112 minutes ([details and limitations](docs/TYPOLOGY_PIPELINE.md)):
+
+| Measure | Value |
+| --- | --- |
+| Relation right, vehicles within 15 m | 73% (77% within 5 m) |
+| Vehicles at a stop called parked | under 4% |
+| Riding context right | 89% |
+| Signs typed (seen at least 40 px tall) | 61% |
+| Plates read (daytime tracks) | 12-16% |
+
+## Review and correct
 
 ```bash
-python -m venv venv
-source venv/bin/activate            # Windows: venv\Scripts\activate
+python -m bikesafe.review      # open http://127.0.0.1:8765
+```
+
+Shows the model's answers - vehicles, signs, plates - most likely errors first. Confirm or correct with one key;
+"Retrain" learns from the corrections. In Colab, the notebook's last cell opens it.
+
+## Run locally
+
+Needs an NVIDIA GPU:
+
+```bash
 pip install -r requirements.txt
-python -m bikesafe.run videos       # folder with the ride videos
+python -m bikesafe.run videos            # every stage, resumable; tables in results/corpus/
+python -m bikesafe.render <video> --start-s 300 --duration-s 60   # an overlay clip
 ```
 
-One command runs every stage, skips work that is already done (stages are resumable), retrains the relation model on
-the labels in `data/typology/` and writes the per-ride tables to `results/corpus/`. Intermediate files go to `work/`.
-To reuse finished stages from another machine, copy `work/` along with the videos; labels stay attached to the right
-vehicles even when the detection stage is re-run; an existing `work/` gets only what changed (the sign and lane pass
-and the plate reading where they predate the October 2026 update, then the track features). The first run downloads
-about 4 GB of open models (street-scene segmenter, CLIP, Florence-2) into the Hugging Face cache.
+- Videos stored elsewhere (e.g. Google Drive): set `BIKESAFE_VIDEOS` to their folder.
+- Slow GPU: `scripts/colab_bundle.py` sends the slowest stage to Colab. Whole corpus: `scripts/carc_run.slurm` (USC CARC).
+- Tests: `python -m pytest tests`.
 
-The ride videos (21 GB) do not have to sit in the project: set `BIKESAFE_VIDEOS` to their folder - for example a
-Google Drive folder through Google Drive for desktop (`setx BIKESAFE_VIDEOS "G:\My Drive\bikesafe\videos"` on
-Windows) - and every tool (`bikesafe.run`, `bikesafe.render`, `bikesafe.review`, ...) reads them from there; once a
-ride is processed they are only read again for overlay clips and the review page.
+## Repository
 
-Where to run what: on USC CARC, submit `scripts/carc_run.slurm` (one-time setup in its header) - batch jobs with no
-time-outs, the best place for whole-corpus runs. On a laptop GPU the sign and lane pass is the slow stage (about 5 h
-per ride on a GeForce MX250); `scripts/colab_bundle.py` runs it on a Colab GPU instead (about 22 min per ride on an
-L4) through Google Drive and brings the results back - steps in its header. `python scripts/build_upgrade_report.py`
-rebuilds the September report from the results.
+| Folder | Contents |
+| --- | --- |
+| `bikesafe/` | the pipeline (`run.py` runs every stage) |
+| `docs/` | how it works, accuracy, limitations, output columns |
+| `results/` | per-ride tables and model evaluation |
+| `demos/` | overlay clips |
+| `data/typology/` | labels ([labelling guide](data/typology/LABELING_GUIDE.md)) |
+| `models/` | detectors and trained models |
+| `scripts/` | Colab notebooks, CARC job, evaluation, report builder |
+| `reports/` | milestone reports |
 
-## What is where
-
-- `reports/UPGRADE_REPORT_2026-09.pdf` - latest report; `reports/VEHICLE_TYPOLOGY_REPORT.md` - previous milestone;
-  `reports/Vehicle_Tracking_Final_Report.pdf` - first milestone (detection and tracking).
-- `docs/TYPOLOGY_PIPELINE.md` - how each stage works and its known limitations; `docs/OUTPUTS.md` - every output
-  table and column (start with `vehicles.csv` and `timeline_1s.csv`).
-- `bikesafe/` - the pipeline; `tests/` - unit tests (`python -m pytest tests`).
-- `data/typology/` - labelled vehicles and scene frames ([labelling guide](data/typology/LABELING_GUIDE.md));
-  `data/approved_*` - the hand-checked 300-frame tracking benchmark.
-- `results/corpus/` - per ride: `vehicles.csv` (one row per vehicle), per-second timeline, events, signs, all-feature
-  track table; `results/typology/` - model evaluation.
-- `scripts/` - report builder, tracker / vehicle-id evaluation on the benchmark, feature comparison and learning
-  curve, and the Colab run of the sign / lane pass (`colab_bundle.py`, `colab_infrastructure.ipynb`).
-- `demos/` - overlay clips of the current pipeline (relations, typed and read signs, signal states, lane lines, plates
-  read): `overlay_006_bikelane_440s.mp4` (painted bike lane), `overlay_005_following_280s.mp4` (following a car from
-  a red light), `overlay_006_parked_700s.mp4` (parked rows, then a wait at a red light with crossing traffic).
-
-## Reviewing and correcting the annotations
-
-```bash
-python -m bikesafe.review           # then open http://127.0.0.1:8765
-```
-
-A browser tool for the people checking the results. It shows the pipeline's own annotations - each vehicle's relation
-as a short animation of its track, each sign's type and text, each plate's reading - with the cases most likely to be
-wrong first, and records every confirmation or correction (with what the model had said) in `data/typology/`.
-"Retrain" rebuilds the models from the corrections. See "Human review loop" in the pipeline doc.
-
-## Licence plates
-
-Plates are read as plain text (`bikesafe.plates`), stored per track in `work/analysis/<video>/plates.parquet` and per
-vehicle in `results/corpus/<video>/tracks_typed.csv` (`plate`), and shown in the overlay clips; nothing is blurred.
-Plate text in `results/` becomes public when it is committed to this public repository. Videos and `work/` are never
-committed.
+The ride videos (21 GB) are kept in Google Drive, available on request. Licence plates are read as plain text and are
+public in `results/`.

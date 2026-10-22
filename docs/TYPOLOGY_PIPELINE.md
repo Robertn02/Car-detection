@@ -293,7 +293,24 @@ resumed output was identical to an uninterrupted one. `infrastructure.json` reco
 covered, so a test window (`--start-s` / `--duration-s`) is never taken for a finished ride. If the reading fails,
 `python -m bikesafe.infrastructure <perception dir> --read-only` reads the signs again from the saved crops
 (`sign_crops.parquet`) without the detectors. Hugging Face models are kept in `_cache/hf` in the project unless
-`HF_HOME` says otherwise. At the end `bikesafe.run` prints how long each stage took.
+`HF_HOME` says otherwise. At the end `bikesafe.run` prints how long each stage took. A pass whose video ends before
+the ride does (a truncated or still-uploading file) stops with an error and keeps its checkpoint instead of writing a
+partial ride as finished.
+
+Without a fast GPU at hand there are two cloud routes, both through Google Colab and Google Drive:
+
+- `scripts/colab_bundle.py` packs the inputs of the slow stage (the infrastructure pass) for chosen rides into an
+  upload folder, `scripts/colab_infrastructure.ipynb` runs it on a Colab GPU, and `colab_bundle.py --fetch` copies the
+  results back into `work/analysis/` (newer files only, so it never undoes later work here). On an L4 a 20-minute ride
+  took 22 minutes (0.35 s per sample, against 6.5 s on the MX250); the notebook waits for each video to arrive in Drive
+  at its full size before starting, and also re-types signs whose typing settings changed.
+- `scripts/colab_try_your_video.ipynb` (the README's "Open in Colab" button) runs every stage on one video with the
+  trained models and shows the overlay clip and tables in the page - for someone without the project installed. It
+  installs the pinned versions with `uv` (under a minute) and writes everything to the user's Drive as it goes, so a
+  dropped session resumes.
+
+Colab sessions end when idle (an L4 waiting for an upload was disconnected), so long whole-corpus runs belong on a
+workstation or USC CARC (`scripts/carc_run.slurm`).
 
 Speed options: FP16 is on by default on CUDA; `--hw-decode` decodes with the GPU's video engine; `--jobs N` runs the
 CPU stages for N rides at once; `--skip-depth` drops the depth pass (removing its features moved leave-one-video-out
