@@ -338,7 +338,11 @@ def train_sign_probe(labels_csv: Path, perception: Path, videos: Path, models: P
         meta_path = perception / str(video) / "meta.json"
         if not meta_path.exists():
             continue
-        cap = open_video(resolve_video(read_json(meta_path), videos))
+        path = resolve_video(read_json(meta_path), videos)
+        if not path.exists():  # e.g. a Colab run imported without its video
+            print(f"{video}: video not found ({path}); its {len(rows)} reviewed signs are left out of the probe")
+            continue
+        cap = open_video(path)
         for r in rows.sort_values("frame").itertuples():
             cap.set(cv2.CAP_PROP_POS_FRAMES, int(r.frame))
             ok, image = cap.read()

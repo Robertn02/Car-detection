@@ -24,9 +24,12 @@ learns from: model proposes, reviewer confirms or corrects, models retrain on th
 
     python -m bikesafe.review --export site/review      # a copy that needs no server (GitHub Pages)
     python -m bikesafe.review --import decisions.json   # the decisions made on it
+    python -m bikesafe.review --import "G:/My Drive/bikesafe_runs/<video>"   # a Colab run and its decisions
 
 The exported copy has the first --per-queue items of each queue with their clips and crops; its decisions stay in the
-viewer's browser until downloaded from its Progress tab.
+viewer's browser until downloaded from its Progress tab. Retrain is offered only where the decisions go to
+data/typology, beside the labelled rides: a Colab run (--labels in its Drive folder) collects decisions, and the
+models learn from them once the run is imported on that machine.
 """
 
 from __future__ import annotations
@@ -130,10 +133,12 @@ def spread(items: pd.DataFrame, n: int, gap_s: float = SPREAD_S) -> pd.DataFrame
 
 
 def next_card_id(video: str, labels: pd.DataFrame, anchors: pd.DataFrame) -> str:
-    """A card id (T<ride>_<n>) not used by any label or anchor of the video."""
-    cards = pd.concat([labels.loc[labels.video == video, "card_id"], anchors.loc[anchors.video == video, "card_id"]])
-    numbers = cards.str.split("_").str[1].astype(int) if len(cards) else pd.Series([0])
-    return f"T{video.rsplit('_', 1)[-1]}_{int(numbers.max()) + 1:03d}"
+    """A card id (T<ride>_<n>) not used by any label or anchor, of any video: card ids key the anchors, and videos can
+    share the name ending the id is made of (every 3-minute cut of the Colab notebook ends in "_3min")."""
+    prefix = f"T{video.rsplit('_', 1)[-1]}_"
+    cards = pd.concat([labels.card_id, anchors.card_id]).dropna().astype(str)
+    numbers = pd.to_numeric(cards[cards.str.startswith(prefix)].str[len(prefix):], errors="coerce").dropna()
+    return f"{prefix}{int(numbers.max()) + 1 if len(numbers) else 1:03d}"
 
 
 def agreement(log: pd.DataFrame) -> dict:
@@ -255,6 +260,9 @@ class Store:
                  cache: Path = ROOT / "work" / "review_cache") -> None:
         self.analysis, self.perception, self.corpus, self.videos = analysis, perception, corpus, videos
         self.labels_dir, self.cache = labels_dir, cache
+        # Retraining learns from data/typology over the rides in `analysis`. Decisions saved elsewhere (a Colab run's
+        # labels/) only join them through --import on the machine that has those rides.
+        self.retrainable = labels_dir.resolve() == LABELS_DIR.resolve()
         self.lock = threading.Lock()
         self.clip_lock = threading.Lock()
         self.retrain: dict = {"state": "idle", "log": ""}
@@ -522,9 +530,12 @@ class Store:
         return {"agreement": agreement(log) if len(log) else {},
                 "track_labels": labels.groupby("labeler").label.count().to_dict() if len(labels) else {},
                 "sign_labels": int(len(self._csv("sign_labels.csv"))),
-                "plate_labels": int(len(self._csv("plate_labels.csv"))), "retrain": self.retrain}
+                "plate_labels": int(len(self._csv("plate_labels.csv"))), "retrain": self.retrain,
+                "retrainable": self.retrainable, "labels_dir": str(self.labels_dir)}
 
     def start_retrain(self) -> dict:
+        if not self.retrainable:
+            return {"state": "unavailable", "log": f"decisions are saved in {self.labels_dir}; retrain after --import"}
         if self.retrain["state"] == "running":
             return self.retrain
 
@@ -691,8 +702,11 @@ const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k
 async function load() {
   if (kind === "progress") return progress();
   $("#main").innerHTML = '<p class="muted">Loading the queue...</p>';
+  const wanted = kind + $("#mode").value;
   const r = await fetch(STATIC ? `queue_${kind === "vehicle" ? "vehicle_" + $("#mode").value : kind}.json` : `/api/queue?kind=${kind}&mode=${$("#mode").value}`);
-  queue = await r.json(); pos = 0;
+  const items = await r.json();
+  if (kind + $("#mode").value !== wanted) return;  // another tab or mode was picked while this queue loaded
+  queue = items; pos = 0;
   if (STATIC && Array.isArray(queue)) queue = queue.filter(it => !saved.some(s => s.kind === it.kind && s.video === it.video && s.item === it.item));
   show();
 }
@@ -777,8 +791,10 @@ async function progress() {
   const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${k}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
     ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${c.model}</td><td>${c.human}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
   $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${k} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
-    <p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${p.retrain.state}: ${p.retrain.log}</span></p></div>${blocks}`;
-  $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; };
+    ${p.retrainable ? `<p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${p.retrain.state}: ${p.retrain.log}</span></p>`
+      : `<p>Decisions are saved in <code>${p.labels_dir}</code>. The models learn from them on the machine with the labelled rides:
+      there, <code>python -m bikesafe.review --import &lt;this run's folder&gt;</code> adds this run and its decisions, then Retrain.</p>`}</div>${blocks}`;
+  if (p.retrainable) $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; };
   if (p.retrain.state === "running") setTimeout(progress, 5000);
 }
 load();
@@ -829,6 +845,47 @@ def import_decisions(store: Store, path: Path) -> int:
     return len(decisions)
 
 
+def import_run(store: Store, run: Path) -> str:
+    """A run of the Colab notebook (My Drive/bikesafe_runs/<video>): its ride joins the rides here (perception,
+    analysis and results, unless already here) and the decisions reviewed on it join the labels, so that Retrain
+    learns from them. Importing a run again replaces its vehicles' labels with the run's."""
+    rides = [meta.parent.name for meta in sorted((run / "work" / "perception").glob("*/meta.json"))]
+    if not rides:
+        raise SystemExit(f"{run} is not a run of the pipeline (no work/perception/<video>/meta.json)")
+    for video in rides:
+        for source, target in ((run / "work" / "perception" / video, store.perception / video),
+                               (run / "work" / "analysis" / video, store.analysis / video),
+                               (run / "results" / video, store.corpus / video)):
+            if source.exists() and not target.exists():
+                shutil.copytree(source, target)
+    labels, counts = run / "labels", {}
+    theirs = pd.read_csv(labels / "track_labels.csv") if (labels / "track_labels.csv").exists() else pd.DataFrame()
+    if len(theirs):
+        # card ids are renumbered: the run numbered its cards on its own, and they key the anchors
+        their_anchors = load_anchors(labels / "track_anchors.csv")
+        mine = store._csv("track_labels.csv", ["card_id", "video", "track_id", "label", "labeler", "notes"])
+        anchors = load_anchors(store.labels_dir / "track_anchors.csv")
+        replaced = mine.merge(theirs[["video", "track_id"]], on=["video", "track_id"]).card_id
+        mine, anchors = mine[~mine.card_id.isin(replaced)], anchors[~anchors.card_id.isin(replaced)]
+        for row in theirs.to_dict("records"):
+            card = next_card_id(str(row["video"]), mine, anchors)
+            anchors = pd.concat([anchors, their_anchors[their_anchors.card_id == row["card_id"]].assign(card_id=card)],
+                                ignore_index=True)
+            mine = pd.concat([mine, pd.DataFrame([{**row, "card_id": card}])], ignore_index=True)
+        mine.to_csv(store.labels_dir / "track_labels.csv", index=False)
+        anchors.to_csv(store.labels_dir / "track_anchors.csv", index=False)
+        counts["vehicle"] = len(theirs)
+    for name, key in (("sign_labels.csv", "object_id"), ("plate_labels.csv", "track_id"), ("review_log.csv", None)):
+        if (labels / name).exists():
+            new = pd.read_csv(labels / name)
+            merged = pd.concat([store._csv(name), new], ignore_index=True)
+            merged = merged.drop_duplicates(["video", key], keep="last") if key else merged.drop_duplicates()
+            merged.to_csv(store.labels_dir / name, index=False)
+            counts[name.split("_")[0]] = len(new)
+    decided = ", ".join(f"{n} {kind}" for kind, n in counts.items() if kind != "review") or "no"
+    return f"{', '.join(rides)}: ride added, {decided} decisions added to {store.labels_dir}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--analysis", type=Path, default=ROOT / "work" / "analysis")
@@ -842,7 +899,8 @@ def main() -> None:
                         help="Write the page and its queues as static files to this folder instead of serving it")
     parser.add_argument("--per-queue", type=int, default=20, help="Items per queue in the --export copy")
     parser.add_argument("--import", dest="import_", type=Path, default=None,
-                        help="Add the decisions downloaded from an exported page (decisions.json) to the labels")
+                        help="Add decisions to the labels: decisions.json downloaded from an exported page, or a Colab "
+                             "run's folder (My Drive/bikesafe_runs/<video>), whose ride joins the rides here")
     args = parser.parse_args()
     args.labels.mkdir(parents=True, exist_ok=True)
     store = Store(args.analysis, args.perception, args.corpus, args.videos, labels_dir=args.labels)
@@ -851,7 +909,10 @@ def main() -> None:
         print(f"wrote {args.export / 'index.html'}")
         return
     if args.import_ is not None:
-        print(f"added {import_decisions(store, args.import_)} decisions to {args.labels}")
+        if args.import_.is_dir():
+            print(import_run(store, args.import_))
+        else:
+            print(f"added {import_decisions(store, args.import_)} decisions to {args.labels}")
         return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(store, page()))
     print(f"review at http://127.0.0.1:{args.port}  ({len(store.tracks)} tracks from {args.corpus})", flush=True)

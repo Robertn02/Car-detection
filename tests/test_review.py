@@ -141,3 +141,44 @@ def test_an_exported_page_runs_without_a_server_and_its_decisions_import(store, 
                                       "model": "parked", "reviewer": "prof", "time": "2026-10-23T10:00:00"}]))
     assert import_decisions(s, decisions) == 1
     assert pd.read_csv(labels_dir / "track_labels.csv").iloc[0].label == "oncoming"
+
+
+def test_card_ids_stay_unique_across_videos_with_the_same_ending():
+    labels = pd.DataFrame({"video": ["ride_a_from0s_3min"], "card_id": ["T3min_001"]})
+    anchors = pd.DataFrame({"video": ["ride_a_from0s_3min"], "card_id": ["T3min_001"]})
+    assert next_card_id("ride_b_from0s_3min", labels, anchors) == "T3min_002"
+
+
+def test_decisions_saved_outside_the_labels_retrain_learns_from_are_not_retrained_on(store):
+    s, _, _ = store  # labels in a folder of its own, as on Colab
+    assert not s.progress()["retrainable"]
+    assert s.start_retrain()["state"] == "unavailable"
+
+
+def test_a_colab_run_and_its_decisions_join_the_rides_and_labels(store, tmp_path):
+    from bikesafe.review import import_run
+
+    s, video, labels_dir = store
+    pd.DataFrame([{"card_id": "T3min_001", "video": "other_from0s_3min", "track_id": 1, "label": "parked",
+                   "labeler": "prof", "notes": ""}]).to_csv(labels_dir / "track_labels.csv", index=False)
+    run, ride = tmp_path / "run", "mine_from0s_3min"
+    (run / "work" / "perception" / ride).mkdir(parents=True)
+    (run / "work" / "perception" / ride / "meta.json").write_text("{}")
+    (run / "work" / "analysis" / ride).mkdir(parents=True)
+    (run / "results" / ride).mkdir(parents=True)
+    (run / "labels").mkdir()
+    pd.DataFrame([{"card_id": "T3min_001", "video": ride, "track_id": 9, "label": "oncoming", "labeler": "prof",
+                   "notes": ""}]).to_csv(run / "labels" / "track_labels.csv", index=False)
+    pd.DataFrame([{"card_id": "T3min_001", "video": ride, "track_id": 9, "frame": f, "x1": 0, "y1": 0, "x2": 9, "y2": 9}
+                  for f in (2, 4)]).to_csv(run / "labels" / "track_anchors.csv", index=False)
+    pd.DataFrame([{"video": ride, "object_id": 3, "label": "stop"}]).to_csv(run / "labels" / "sign_labels.csv",
+                                                                         index=False)
+    for _ in range(2):  # importing again changes nothing
+        assert ride in import_run(s, run)
+    assert (s.perception / ride / "meta.json").exists() and (s.corpus / ride).exists()
+    labels = pd.read_csv(labels_dir / "track_labels.csv")
+    mine = labels[labels.video == ride]
+    assert len(labels) == 2 and mine.card_id.tolist() == ["T3min_002"]  # renumbered: T3min_001 was taken
+    anchors = pd.read_csv(labels_dir / "track_anchors.csv")
+    assert anchors.card_id.tolist() == ["T3min_002", "T3min_002"]
+    assert len(pd.read_csv(labels_dir / "sign_labels.csv")) == 1
