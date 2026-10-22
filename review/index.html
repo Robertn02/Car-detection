@@ -50,8 +50,11 @@ const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k
 async function load() {
   if (kind === "progress") return progress();
   $("#main").innerHTML = '<p class="muted">Loading the queue...</p>';
+  const wanted = kind + $("#mode").value;
   const r = await fetch(STATIC ? `queue_${kind === "vehicle" ? "vehicle_" + $("#mode").value : kind}.json` : `/api/queue?kind=${kind}&mode=${$("#mode").value}`);
-  queue = await r.json(); pos = 0;
+  const items = await r.json();
+  if (kind + $("#mode").value !== wanted) return;  // another tab or mode was picked while this queue loaded
+  queue = items; pos = 0;
   if (STATIC && Array.isArray(queue)) queue = queue.filter(it => !saved.some(s => s.kind === it.kind && s.video === it.video && s.item === it.item));
   show();
 }
@@ -136,8 +139,10 @@ async function progress() {
   const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${k}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
     ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${c.model}</td><td>${c.human}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
   $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${k} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
-    <p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${p.retrain.state}: ${p.retrain.log}</span></p></div>${blocks}`;
-  $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; };
+    ${p.retrainable ? `<p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${p.retrain.state}: ${p.retrain.log}</span></p>`
+      : `<p>Decisions are saved in <code>${p.labels_dir}</code>. The models learn from them on the machine with the labelled rides:
+      there, <code>python -m bikesafe.review --import &lt;this run's folder&gt;</code> adds this run and its decisions, then Retrain.</p>`}</div>${blocks}`;
+  if (p.retrainable) $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; };
   if (p.retrain.state === "running") setTimeout(progress, 5000);
 }
 load();
