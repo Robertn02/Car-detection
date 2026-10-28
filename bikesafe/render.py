@@ -818,8 +818,11 @@ def main() -> None:
     width = args.width or calib["width"]
     scale = width / calib["width"]
     size = (width, int(round(calib["height"] * scale)) // 2 * 2)
+    source = args.videos / f"{args.video}.mp4"
+    cap = open_video(source)
+    if not cap.isOpened():  # not an empty clip: say where the video was looked for
+        raise SystemExit(f"cannot read {source} (--videos, or set BIKESAFE_VIDEOS)")
     writer = VideoOut(out, fps, size, crf=args.crf, max_mbps=args.max_mbps)
-    cap = open_video(args.videos / f"{args.video}.mp4")
     first = int(np.ceil(args.start_s * fps))
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     annotator = None
