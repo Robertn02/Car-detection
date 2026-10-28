@@ -6,10 +6,18 @@ a bike lane), traffic lights with their state, and traffic signs with their type
 bikesafe.plates has run, otherwise a confident reading of the frame; --no-plates to switch off). A vehicle boxed twice
 by the detector (car + truck) is drawn once, in the colour of its vehicle-level relation.
 
-Lane lines and road furniture are measured on sampled frames (2 per second). In between, a sign's box and a lane
-line's position are interpolated from the samples before and after, and a lane line is drawn only where it was found
-on two of three consecutive samples, no further ahead than its paint was seen, not across a junction's crosswalk, and
-behind the vehicles - so the overlay does not flicker or sweep across the picture when one sample is off.
+Lane lines and road furniture are measured on sampled frames (2 per second). In between, a sign's box is
+interpolated from the samples before and after. A lane line found on two of three consecutive samples is predicted
+for every frame from the samples around it, then laid on the paint of that frame (LaneOverlay): the handlebar camera
+rolls and pitches between samples, so a line drawn from the samples alone drifts off its paint. Lines with no paint
+under them in the frame (a crack or seam the segmenter took for paint) fade out, as do lines at a junction's
+crosswalk; lines are drawn as strips of road paint in perspective, no further ahead than their paint was seen, and
+behind the vehicles.
+
+Labels are short ("same way", "side road": the legend gives the colours in full) and placed so they do not cover
+one another. The banner's riding context is the most common one over SCENE_SMOOTH_S around the moment, so it does
+not flip with every second's call (timeline_1s.csv keeps the per-second call). Its speed is the GPS speed where the
+ride has a GPS track (bikesafe.gps; the speed measured from the video reads about 0.6 of it), else the video's.
 
 The clip has every frame of the video at its full size (--width to shrink it). Vehicles are detected on every second
 frame (bikesafe.perceive --target-fps), so their boxes are interpolated on the frames in between. It is written as
@@ -31,7 +39,10 @@ import pandas as pd
 from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS, ROOT, VIDEOS, VideoOut, open_video, read_json
 from bikesafe.infrastructure import JUNCTION_CROSSWALK, JUNCTION_LINES, LINE_Z_MAX, REF_Z, line_extents, parse_lines
 
-LABELS = RELATION_TEXT
+LABELS = RELATION_TEXT  # the legend
+BOX_LABELS = {"ego_lane": "in my lane", "adjacent_same": "same way", "oncoming": "oncoming", "parked": "parked",
+              "cross_side": "side road"}  # on the boxes
+SCENE_SMOOTH_S = 7  # seconds of riding context the banner takes the most common of
 LIGHT_COLOURS_BGR = {"red": (60, 60, 255), "yellow": (0, 215, 255), "green": (90, 220, 60), "off": (200, 200, 200)}
 SIGN_COLOURS_BGR = {"stop": (40, 40, 230), "do_not_enter": (40, 40, 230), "yield": (40, 40, 230),
                     "warning": (0, 210, 255), "pedestrian": (0, 230, 200), "street_name": (90, 200, 60),
@@ -52,15 +63,54 @@ MAX_LINE_X = 3.5  # metres either side of the rider's path that lines are drawn
 LINES_PER_SIDE = 2
 EXTEND_M = 4.0
 DUPLICATE_M = 0.6
+# Laying predicted lines on the paint of each frame (LaneOverlay)
+PAINT_W_M = 0.12  # lane paint width, for judging a bright stripe in the image
+DRAW_W_M = 0.17  # width of the strip drawn over it
+SNAP_SEARCH_M = 0.3  # paint is looked for this far either side of the predicted line
+SNAP_ROWS = 28  # image rows looked at along a line
+SNAP_MIN_POINTS = 5  # rows that must find paint for the frame to place the line
+SNAP_MIN_CONTRAST, SNAP_CONTRAST_SHARE = 8.0, 0.15  # paint stands this far above the asphalt (grey levels, share)
+SNAP_GAIN = 0.5  # weight of a frame's measurement against the line's running estimate
+SUPPORT_DECAY = 0.85  # per frame; a line is shown while its share of frames with paint found stays above SHOW_SUPPORT
+SHOW_SUPPORT = 0.4
+KEEP_S = 0.8  # a line followed on its paint stays this long after the samples stop reporting it
+FADE_S = 0.25  # lines fade in and out over this long
 
 
-def draw_legend(frame: np.ndarray) -> None:
-    x, y = 16, frame.shape[0] - 16 - 30 * len(RELATIONS)
-    cv2.rectangle(frame, (x - 8, y - 26), (x + 300, frame.shape[0] - 8), (20, 20, 20), -1)
-    for i, rel in enumerate(RELATIONS):
-        cy = y + 30 * i
-        cv2.rectangle(frame, (x, cy - 14), (x + 22, cy + 6), RELATION_COLOURS_BGR[rel], -1)
-        cv2.putText(frame, LABELS[rel], (x + 32, cy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (240, 240, 240), 1, cv2.LINE_AA)
+def draw_legend(frame: np.ndarray, lanes: bool = True) -> None:
+    """Box colours and, when lane lines are drawn, their colours, on a translucent panel in the bottom-left corner."""
+    rows = [(LABELS[rel], RELATION_COLOURS_BGR[rel], "box") for rel in RELATIONS]
+    if lanes:
+        rows += [("lane line", LANE_COLOURS_BGR["solid"], "line"), ("bike-lane line", LANE_COLOURS_BGR["bike"], "line")]
+    step, x = 27, 16
+    y = frame.shape[0] - 14 - step * len(rows)
+    top, bottom, right = y - 22, frame.shape[0] - 8, x + 262
+    frame[top:bottom, x - 8:right] = (frame[top:bottom, x - 8:right] * 0.35 + 20 * 0.65).astype(np.uint8)
+    for i, (text, colour, kind) in enumerate(rows):
+        cy = y + step * i
+        if kind == "box":
+            cv2.rectangle(frame, (x, cy - 13), (x + 22, cy + 5), colour, -1)
+        else:
+            cv2.line(frame, (x, cy - 4), (x + 22, cy - 4), colour, 5, cv2.LINE_AA)
+        cv2.putText(frame, text, (x + 32, cy + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
+
+
+def place_label(taken: list[tuple[int, int, int, int]], x: int, box_top: int, box_bottom: int, w: int, h: int,
+                frame_w: int, min_y: int, steps: int = 6) -> tuple[int, int] | None:
+    """Top-left corner for a w x h label of the box whose left edge is x and top and bottom box_top and box_bottom:
+    just above the box if that is free, else inside its top, else stacked up to `steps` labels higher, never over a
+    label already placed (`taken`, which the label is added to) and never off the picture. None when no place is
+    free (a crowd of distant boxes): the box is then drawn without a label."""
+    x = int(min(max(0, x), max(0, frame_w - w)))
+    above = max(min_y, box_top - h)
+    tries = [above, box_top + 2 if box_bottom - box_top > 2.5 * h else above]
+    tries += [max(min_y, above - k * (h + 2)) for k in range(1, steps + 1)]
+    for y in tries:
+        rect = (x, y, x + w, y + h)
+        if not any(rect[0] < b[2] and b[0] < rect[2] and rect[1] < b[3] and b[1] < rect[3] for b in taken):
+            taken.append(rect)
+            return x, y
+    return None
 
 
 def project_line(x0: float, shear: float, u_foe: float, calib: dict, z_range: tuple[float, float] = (2.5, 14.0)) -> np.ndarray:
@@ -122,6 +172,13 @@ def lane_line_tracks(lanes: pd.DataFrame, calib: dict | None = None) -> pd.DataF
 
 def lines_at(t: float, lanes: pd.DataFrame, tracks: pd.DataFrame, calib: dict | None = None) -> tuple[list[dict], float | None]:
     """Lines to draw at time t (interpolated between the samples around it) and the heading column to draw them with."""
+    lines, u_foe, _ = lines_near(t, lanes, tracks, calib)
+    return lines, u_foe
+
+
+def lines_near(t: float, lanes: pd.DataFrame, tracks: pd.DataFrame,
+               calib: dict | None = None) -> tuple[list[dict], float | None, bool]:
+    """lines_at, and whether t is at a junction (no lane lines there)."""
     times = lanes.time_s.to_numpy()
     after = int(np.searchsorted(times, t))
     before = after - 1
@@ -131,19 +188,19 @@ def lines_at(t: float, lanes: pd.DataFrame, tracks: pd.DataFrame, calib: dict | 
     if after < len(times) and times[after] - t <= MAX_INTERP_GAP_S:
         candidates.append(after)
     if not candidates:
-        return [], None
+        return [], None, False
     if len(candidates) == 2:
         w = (t - times[before]) / max(times[after] - times[before], 1e-6)
     else:
         w = 0.0 if candidates[0] == before else 1.0
         if abs(times[candidates[0]] - t) > SAMPLE_HOLD_S:
-            return [], None
+            return [], None, False
     u_foe = float(np.interp(t, times[candidates], lanes.u_foe.to_numpy()[candidates])) if len(candidates) == 2 \
         else float(lanes.u_foe.iloc[candidates[0]])
     a = tracks[(tracks["sample"] == before) & tracks.confirmed] if before in candidates else tracks.iloc[:0]
     b = tracks[(tracks["sample"] == after) & tracks.confirmed] if after in candidates else tracks.iloc[:0]
     if (len(a) and a.junction.iloc[0]) or (len(b) and b.junction.iloc[0]):
-        return [], u_foe  # crosswalk bars and turn paint at a junction are not lane structure
+        return [], u_foe, True  # crosswalk bars and turn paint at a junction are not lane structure
     out = []
     for line_id in set(a.line_id) | set(b.line_id):
         ra = a[a.line_id == line_id]
@@ -151,6 +208,7 @@ def lines_at(t: float, lanes: pd.DataFrame, tracks: pd.DataFrame, calib: dict | 
         if len(ra) and len(rb):
             ra, rb = ra.iloc[0], rb.iloc[0]
             line = {k: (1 - w) * ra[k] + w * rb[k] for k in ("x", "shear", "z_near", "z_far")}
+            line["line_id"] = int(line_id)
             line.update(solid=bool(ra.solid if w < 0.5 else rb.solid), yellow=bool(ra.yellow if w < 0.5 else rb.yellow),
                         both=True)
         else:  # seen on one side only: hold it briefly, do not invent motion
@@ -158,6 +216,7 @@ def lines_at(t: float, lanes: pd.DataFrame, tracks: pd.DataFrame, calib: dict | 
             if abs(t - when) > SAMPLE_HOLD_S:
                 continue
             line = {k: only[k] for k in ("x", "shear", "z_near", "z_far", "solid", "yellow")}
+            line["line_id"] = int(line_id)
             if calib is not None:  # where it is in the image, from the heading it is drawn with
                 line["x"] = only["x"] + only["offset"] - calib["lateral_height_m"] * (u_foe - calib["width"] / 2) / (
                     calib["focal_px"] * calib["cam_height_m"] / REF_Z)
@@ -173,7 +232,7 @@ def lines_at(t: float, lanes: pd.DataFrame, tracks: pd.DataFrame, calib: dict | 
     out = kept
     left = sorted([ln for ln in out if ln["x"] < 0], key=lambda ln: -ln["x"])[:LINES_PER_SIDE]
     right = sorted([ln for ln in out if ln["x"] >= 0], key=lambda ln: ln["x"])[:LINES_PER_SIDE]
-    return left + right, u_foe
+    return left + right, u_foe, False
 
 
 def draw_lane_lines(image: np.ndarray, lines: list[dict], u_foe: float, calib: dict, in_bike_lane: bool,
@@ -197,6 +256,163 @@ def draw_lane_lines(image: np.ndarray, lines: list[dict], u_foe: float, calib: d
     for x1, y1, x2, y2 in vehicle_boxes:
         drawn[max(0, int(y1)): int(y2), max(0, int(x1)): int(x2)] = 0
     np.copyto(image, layer, where=(drawn > 0)[..., None])
+
+
+def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
+               lateral_h: float, boxes: np.ndarray, contrast: float) -> tuple[float, float, float] | None:
+    """The image line u = a + b*d (d: rows below the horizon) moved onto the paint near it in this frame.
+
+    Along the predicted line, each sampled row is searched SNAP_SEARCH_M either side for a stripe brighter than the
+    asphalt beside it by `contrast`, about as wide as lane paint at that distance (a kerb, a white car or a sunlit
+    patch is wider). A straight line through the stripes found, robust to strays, is the line in this frame; it is
+    returned as (a, b, lowest row found below the horizon), or None when too few rows found paint."""
+    height, width = bright.shape
+    found = []
+    for d in np.linspace(d_range[0], d_range[1], SNAP_ROWS):
+        v = int(round(horizon + d))
+        if v < 1 or v >= height - 1:
+            continue
+        px_per_m = d / lateral_h
+        u = a + b * d
+        paint_px = max(2.0, PAINT_W_M * px_per_m)
+        reach = max(6.0, SNAP_SEARCH_M * px_per_m)
+        lo, hi = int(max(0, u - reach - 2 * paint_px)), int(min(width, u + reach + 2 * paint_px))
+        if hi - lo < 12 or any(y1 <= v <= y2 and x1 < hi and lo < x2 for x1, y1, x2, y2 in boxes):
+            continue  # off the picture, or hidden by a vehicle
+        profile = bright[v - 1: v + 2, lo:hi].mean(axis=0)
+        k = max(1, int(paint_px / 2))
+        profile = np.convolve(profile, np.ones(k) / k, mode="same")
+        background = float(np.median(profile))
+        inside = np.flatnonzero(np.abs(np.arange(lo, hi) - u) <= reach)
+        if not len(inside):
+            continue
+        i = int(inside[np.argmax(profile[inside])])
+        rise = profile[i] - background
+        if rise < contrast:
+            continue
+        half = background + rise / 2
+        left, right = i, i
+        while left > 0 and profile[left - 1] > half:
+            left -= 1
+        while right < len(profile) - 1 and profile[right + 1] > half:
+            right += 1
+        if not 0.3 * paint_px <= right - left + 1 <= 3 * paint_px + 3:
+            continue
+        found.append((d, lo + (left + right) / 2, rise))
+    if len(found) < SNAP_MIN_POINTS:
+        return None
+    ds, us, weights = (np.array(c, float) for c in zip(*found))
+    keep = np.ones(len(ds), bool)
+    fit_a = fit_b = 0.0
+    for _ in range(2):  # fit, drop the rows far off the fit, fit again
+        fit_b, fit_a = np.polyfit(ds[keep], us[keep], 1, w=weights[keep])
+        keep = np.abs(us - (fit_a + fit_b * ds)) <= 0.08 * ds / lateral_h + 3
+        if keep.sum() < SNAP_MIN_POINTS:
+            return None
+    if np.ptp(ds[keep]) < 0.25 * (d_range[1] - d_range[0]):
+        return None  # all in one short stretch: not enough to set the line's slant
+    return float(fit_a), float(fit_b), float(ds[keep].max())
+
+
+class LaneOverlay:
+    """The lane lines of each frame of a clip, predicted from the samples around it (lines_near) and laid on the
+    paint of the frame (find_paint).
+
+    Each line is followed as an image line u = a + b*d (d = rows below the horizon), which is what a straight line on
+    a flat road looks like. Its estimate starts from the samples' prediction, is moved part of the way to where this
+    frame shows its paint, and is pulled back gently towards the prediction, so it neither jitters with the frame nor
+    wanders off with it. A line is shown while paint is found under it in most recent frames, kept for KEEP_S after
+    the samples stop reporting it as long as its paint is still there, and faded in and out."""
+
+    def __init__(self, lanes: pd.DataFrame, calib: dict, fps: float) -> None:
+        self.lanes, self.calib, self.fps = lanes, calib, fps
+        self.tracks = lane_line_tracks(lanes, calib)
+        self.fh = calib["focal_px"] * calib["cam_height_m"]
+        self.lateral_h = calib["lateral_height_m"]
+        self.horizon = calib["horizon_v"]
+        self.state: dict[int, dict] = {}
+
+    def image_line(self, x: float, shear: float, u_foe: float) -> tuple[float, float]:
+        """(a, b) of the metric line X(Z) = x + shear*(Z - REF_Z) seen from the heading u_foe (as project_line)."""
+        return u_foe + shear * self.fh / self.lateral_h, (x - shear * REF_Z) / self.lateral_h
+
+    def update(self, image: np.ndarray, frame: int, boxes: np.ndarray) -> list[dict]:
+        """Lines to draw on this frame, each with its image line, rows and opacity."""
+        lines, u_foe, junction = lines_near(frame / self.fps, self.lanes, self.tracks, self.calib)
+        bright = (image[..., 1].astype(np.float32) + image[..., 2]) / 2  # green + red: white and yellow paint both
+        road = bright[int(self.horizon) + 20:]
+        contrast = max(SNAP_MIN_CONTRAST, SNAP_CONTRAST_SHARE * float(np.median(road))) if road.size else SNAP_MIN_CONTRAST
+        bottom = image.shape[0] - self.horizon - 2
+        seen = set()
+        for line in lines:
+            assert u_foe is not None
+            lid = line["line_id"]
+            seen.add(lid)
+            prediction = np.array(self.image_line(line["x"], line["shear"], u_foe))
+            st = self.state.get(lid)
+            if st is None or frame - st["frame"] > 2:
+                st = self.state[lid] = {"ab": prediction, "support": 0.5, "alpha": 0.0, "frame": frame}
+            else:  # its own estimate, held near the samples' prediction
+                st["ab"] = 0.85 * st["ab"] + 0.15 * prediction
+            z1 = min(LINE_Z_MAX, line["z_far"])
+            z0 = 2.5 if z1 - line["z_near"] >= EXTEND_M else max(2.5, line["z_near"])
+            st.update(x=line["x"], solid=line["solid"], yellow=line["yellow"], sample_frame=frame,
+                      d_far=self.fh / z1, d_near=self.fh / z0)
+        step = 1.0 / max(1.0, FADE_S * self.fps)
+        for lid, st in list(self.state.items()):
+            if junction or (lid not in seen and frame - st["sample_frame"] > KEEP_S * self.fps):
+                st["support"] = 0.0  # at a junction, or no longer reported: fade out
+            elif st["d_near"] - st["d_far"] > 10:
+                found = find_paint(bright, float(st["ab"][0]), float(st["ab"][1]), (st["d_far"], bottom),
+                                   self.horizon, self.lateral_h, boxes, contrast)
+                if found is not None:
+                    st["ab"] = st["ab"] + SNAP_GAIN * (np.array(found[:2]) - st["ab"])
+                    st["d_near"] = max(st["d_near"], min(found[2], bottom))
+                st["support"] = SUPPORT_DECAY * st["support"] + (1 - SUPPORT_DECAY) * (found is not None)
+            target = 1.0 if st["support"] >= SHOW_SUPPORT else 0.0
+            st["alpha"] = float(np.clip(st["alpha"] + np.sign(target - st["alpha"]) * step, 0.0, 1.0))
+            st["frame"] = frame
+            if st["alpha"] == 0.0 and target == 0.0:
+                del self.state[lid]
+        shown = sorted((st for st in self.state.values() if st["alpha"] > 0), key=lambda st: -st["support"])
+        kept: list[dict] = []  # two ids that settled on one painted line are drawn once
+        for st in shown:
+            d_mid = (st["d_far"] + st["d_near"]) / 2
+            u_mid = st["ab"][0] + st["ab"][1] * d_mid
+            if all(abs(u_mid - (k["ab"][0] + k["ab"][1] * d_mid)) > 0.25 * d_mid / self.lateral_h for k in kept):
+                kept.append(st)
+        return kept
+
+    def draw(self, image: np.ndarray, frame: int, in_bike_lane: bool, boxes: np.ndarray) -> None:
+        """The lines as strips of paint in perspective, fading out towards where their paint was last seen, behind
+        the vehicles."""
+        lines = self.update(image, frame, boxes)
+        if not lines:
+            return
+        height = image.shape[0]
+        top = int(max(0, self.horizon + min(st["d_far"] for st in lines)))
+        layer = np.zeros((height - top, image.shape[1], 3), np.uint8)
+        alpha = np.zeros((height - top, image.shape[1]), np.float32)
+        for st in lines:
+            colour = LANE_COLOURS_BGR["yellow"] if st["yellow"] else LANE_COLOURS_BGR["solid" if st["solid"] else "broken"]
+            if in_bike_lane and -2.4 <= st["x"] <= -0.3 and not st["yellow"]:
+                colour = LANE_COLOURS_BGR["bike"]
+            opacity = st["alpha"] * (0.85 if st["solid"] else 0.65)
+            ds = np.linspace(st["d_far"], st["d_near"], 24)
+            us = st["ab"][0] + st["ab"][1] * ds
+            half = np.maximum(1.5, DRAW_W_M / 2 * ds / self.lateral_h)
+            fade = np.clip((ds - st["d_far"]) / max(1.0, 0.35 * (st["d_near"] - st["d_far"])), 0.0, 1.0)
+            vs = self.horizon + ds - top
+            for i in range(len(ds) - 1):
+                quad = np.array([[us[i] - half[i], vs[i]], [us[i] + half[i], vs[i]],
+                                 [us[i + 1] + half[i + 1], vs[i + 1]], [us[i + 1] - half[i + 1], vs[i + 1]]], np.int32)
+                cv2.fillConvexPoly(layer, quad, colour, cv2.LINE_AA)
+                cv2.fillConvexPoly(alpha, quad, float(opacity * (fade[i] + fade[i + 1]) / 2), cv2.LINE_AA)
+        for x1, y1, x2, y2 in boxes:
+            alpha[max(0, int(y1) - top): max(0, int(y2) - top), max(0, int(x1)): max(0, int(x2))] = 0
+        region = image[top:].astype(np.float32)
+        a = alpha[..., None]
+        image[top:] = (region * (1 - a) + layer.astype(np.float32) * a).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -277,11 +493,12 @@ def sign_label(o: pd.Series) -> str:
     return name
 
 
-def draw_objects(image: np.ndarray, objects: list[tuple[pd.Series, np.ndarray]]) -> None:
+def draw_objects(image: np.ndarray, objects: list[tuple[pd.Series, np.ndarray]],
+                 taken: list[tuple[int, int, int, int]] | None = None) -> None:
     """Signal heads with a read lamp state and signs with a known type get a box and a label; unlit or side-on heads
     and untyped signs only a thin box, so a junction full of heads does not bury the picture in labels. Labels are
-    placed so they do not overlap one another (the later one moves up)."""
-    taken: list[tuple[int, int, int, int]] = []
+    placed so they do not overlap one another or those in `taken` (place_label)."""
+    taken = [] if taken is None else taken
     for o, (x1, y1, x2, y2) in sorted(objects, key=lambda item: -(item[1][3] - item[1][1])):  # largest first
         if o.kind == "light":
             lit = o.light_state in ("red", "yellow", "green")
@@ -297,15 +514,24 @@ def draw_objects(image: np.ndarray, objects: list[tuple[pd.Series, np.ndarray]])
         if not label or y2 - y1 < 14:
             continue
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2)
-        top = max(60 + th, p1[1] - 6)
-        for _ in range(6):  # move up past labels already placed
-            box = (p1[0] - 2, top - th - 6, p1[0] + tw + 4, top + 4)
-            if not any(box[0] < b[2] and b[0] < box[2] and box[1] < b[3] and b[1] < box[3] for b in taken):
-                break
-            top = max(60 + th, top - th - 10)
-        taken.append((p1[0] - 2, top - th - 6, p1[0] + tw + 4, top + 4))
-        cv2.rectangle(image, (p1[0] - 2, top - th - 6), (p1[0] + tw + 4, top + 4), (20, 20, 20), -1)
-        cv2.putText(image, label, (p1[0] + 1, top), cv2.FONT_HERSHEY_SIMPLEX, 0.75, colour, 2, cv2.LINE_AA)
+        spot = place_label(taken, p1[0] - 2, p1[1] - 2, p2[1], tw + 6, th + 10, image.shape[1], 60)
+        if spot is None:
+            continue
+        lx, ly = spot
+        cv2.rectangle(image, (lx, ly), (lx + tw + 6, ly + th + 10), (20, 20, 20), -1)
+        cv2.putText(image, label, (lx + 3, ly + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.75, colour, 2, cv2.LINE_AA)
+
+
+def smoothed_scene(scene: pd.Series, window_s: int = SCENE_SMOOTH_S) -> pd.Series:
+    """Per second, the most common riding context over window_s seconds around it (ties: the second's own)."""
+    codes, names = pd.factorize(scene.astype(str))
+    out = []
+    for i in range(len(codes)):
+        window = codes[max(0, i - window_s // 2): i + window_s // 2 + 1]
+        counts = np.bincount(window, minlength=len(names))
+        best = np.flatnonzero(counts == counts.max())
+        out.append(names[codes[i] if codes[i] in best else best[0]])
+    return pd.Series(out, index=scene.index)
 
 
 def fill_box_gaps(kin: pd.DataFrame, stride: int, max_gap: int = MAX_BOX_GAP, step: int | None = None) -> pd.DataFrame:
@@ -374,6 +600,10 @@ def main() -> None:
     kin = pd.read_parquet(analysis_dir / "kinematics.parquet")
     tracks = pd.read_csv(args.corpus / args.video / "tracks_typed.csv")
     line = pd.read_csv(args.corpus / args.video / "timeline_1s.csv").set_index("second")
+    shown_scene = smoothed_scene(line.scene)
+    gps_path = args.corpus / args.video / "gps_1s.csv"
+    gps_speed = (pd.read_csv(gps_path).set_index("second").gps_speed_mps.rolling(3, center=True, min_periods=1).median()
+                 if gps_path.exists() else pd.Series(dtype=float))
     if "vehicle_relation" in tracks:  # one colour per physical vehicle
         tracks = tracks.assign(relation=tracks.vehicle_relation)
         proba = [c for c in tracks if c.startswith("proba_")]
@@ -396,13 +626,17 @@ def main() -> None:
     frames = kin.groupby("frame")
     present = set(frames.groups)
 
-    lanes = object_boxes = line_tracks = None
+    lane_overlay = object_boxes = None
     lanes_path = infra_dir / "lanes.parquet"
     if lanes_path.exists() and not args.no_infrastructure:
         lanes = pd.read_parquet(lanes_path)
         lanes = lanes[(lanes.time_s >= args.start_s - 2) & (lanes.time_s < end_s + 2)].reset_index(drop=True)
-        line_tracks = lane_line_tracks(lanes, calib)
+        lane_overlay = LaneOverlay(lanes, calib, fps) if len(lanes) else None
         objects = pd.read_parquet(infra_dir / "infrastructure.parquet")
+        signs_csv = args.corpus / args.video / "signs.csv"
+        if signs_csv.exists():  # its sign text has partial street names completed
+            text = pd.read_csv(signs_csv, keep_default_na=False).set_index("object_id").sign_text.astype(str)
+            objects["sign_text"] = objects.object_id.map(text).fillna(objects.sign_text)
         object_boxes = ObjectBoxes(objects[(objects.time_s >= args.start_s - 2) & (objects.time_s < end_s + 2)
                                            & objects.kind.isin(["light", "sign"])], fps, calib["width"], calib["height"])
 
@@ -432,30 +666,38 @@ def main() -> None:
         rows = rows[(rows.box_h >= args.min_box_h) & rows.relation.apply(lambda r: isinstance(r, str))]
         second = int(target / fps)
         info = line.loc[second] if second in line.index else None
-        in_bike_lane = bool(info is not None and info.scene == "bike_lane")  # the riding context, not the raw paint call
-        if lanes is not None and line_tracks is not None and object_boxes is not None and len(lanes):
-            drawn, u_foe = lines_at(target / fps, lanes, line_tracks, calib)
-            if u_foe is not None:
-                draw_lane_lines(image, drawn, u_foe, calib, in_bike_lane, in_frame[["x1", "y1", "x2", "y2"]].to_numpy(float))
-            draw_objects(image, object_boxes(target))
+        scene = shown_scene.get(second) if info is not None else None
+        in_bike_lane = scene == "bike_lane"  # the riding context, not the raw paint call
+        if lane_overlay is not None:
+            lane_overlay.draw(image, target, in_bike_lane, in_frame[["x1", "y1", "x2", "y2"]].to_numpy(float))
+        taken: list[tuple[int, int, int, int]] = []
+        if object_boxes is not None:
+            draw_objects(image, object_boxes(target), taken)
         if annotator is not None and len(rows):  # on the full-resolution frame, so plates are large enough to read
             annotator(image, rows[["x1", "y1", "x2", "y2"]].to_numpy(float), rows.track_id.tolist(), scale,
                       find=target in detected)
-        for r in rows.itertuples():
+        for r in rows.sort_values("z_m").itertuples():  # nearest first: their labels get the place above the box
             colour = RELATION_COLOURS_BGR.get(r.relation, (255, 255, 255))
             far = not r.z_m <= LABEL_MAX_Z
             thick = 1 if far else 4 if r.relation in ("ego_lane", "adjacent_same", "oncoming") else 2
             cv2.rectangle(image, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)), colour, thick)
             if r.box_h >= 40 and not far:
                 unsure = "?" if r.relation_confidence < UNSURE_CONFIDENCE else ""
-                label = f"{LABELS[r.relation]}{unsure} {r.z_m:.0f}m"
+                label = f"{BOX_LABELS[r.relation]}{unsure} {r.z_m:.0f}m"
                 (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                top = max(0, int(r.y1) - th - 10)
-                cv2.rectangle(image, (int(r.x1), top), (int(r.x1) + tw + 8, top + th + 10), colour, -1)
-                cv2.putText(image, label, (int(r.x1) + 4, top + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (15, 15, 15), 2, cv2.LINE_AA)
-        banner = f"t={target / fps:7.1f}s"
+                spot = place_label(taken, int(r.x1), int(r.y1), int(r.y2), tw + 8, th + 10, image.shape[1], 56, steps=1)
+                if spot is None:
+                    continue  # nearer vehicles took the room around it
+                lx, ly = spot
+                cv2.rectangle(image, (lx, ly), (lx + tw + 8, ly + th + 10), colour, -1)
+                cv2.putText(image, label, (lx + 4, ly + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (15, 15, 15), 2, cv2.LINE_AA)
+        clock = target / fps
+        banner = f"{int(clock // 60)}:{clock % 60:04.1f}"
         if info is not None:
-            banner += f" | scene: {str(info.scene).replace('_', ' ')} | ego {info.ego_speed_mps:.1f} m/s"
+            gps = float(gps_speed.get(second, np.nan))
+            speed = gps if np.isfinite(gps) else max(0.0, float(info.ego_speed_mps))
+            banner += (f" | {str(scene).replace('_', ' ')} | {speed:.1f} m/s ({speed * 2.237:.0f} mph"
+                       f"{' GPS' if np.isfinite(gps) else ''})")
             if "in_bike_lane" in line:
                 state = info.get("traffic_light_state")
                 if isinstance(state, str):
@@ -466,7 +708,7 @@ def main() -> None:
         cv2.rectangle(image, (0, 0), (calib["width"], 54), (20, 20, 20), -1)
         cv2.putText(image, banner, (16, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (245, 245, 245), 2, cv2.LINE_AA)
         if not args.no_vehicles:
-            draw_legend(image)
+            draw_legend(image, lanes=lane_overlay is not None)
         writer.write(image if size == (image.shape[1], image.shape[0]) else
                      cv2.resize(image, size, interpolation=cv2.INTER_AREA))
     writer.release()

@@ -1708,7 +1708,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 7711,2026-02-23T18:55:09,1158.83,1160.33,1.5,oncoming,oncoming,sharing_road,0.508,,True,car,5.5,-4.39,left,0.0,0.15,,176.0,1,7711
 7713,2026-02-23T18:55:10,1159.0,1159.67,0.67,parked,parked,parked,0.631,,False,car,23.2,5.91,right,0.0,0.0,,44.0,1,7713
 7714,2026-02-23T18:55:10,1159.17,1161.5,2.33,parked,parked,parked,0.453,,True,car,6.4,-4.74,left,0.0,0.0,,157.0,1,7714
-7717,2026-02-23T18:55:10,1159.58,1164.33,4.75,"other lane, same way",adjacent_same,sharing_road,0.433,model unsure,True,car,2.6,2.03,right,0.0,0.0,,512.0,2,7717 7769
+7717,2026-02-23T18:55:10,1159.58,1164.33,4.75,"other lane, same way",adjacent_same,sharing_road,0.433,model unsure,True,bus,2.6,2.03,right,0.0,0.0,,512.0,2,7717 7769
 7724,2026-02-23T18:55:11,1160.25,1160.25,0.0,parked,parked,parked,0.597,,False,car,20.0,9.1,right,0.0,0.0,,38.0,1,7724
 7756,2026-02-23T18:55:13,1162.42,1164.08,1.66,parked,parked,parked,0.426,model unsure,True,car,2.5,-1.22,left,0.0,0.05,,414.0,1,7756
 7758,2026-02-23T18:55:13,1162.58,1165.92,3.34,side road / other roadway,cross_side,not_sharing,0.287,model unsure; may not be a vehicle,False,car,17.3,9.33,right,0.0,0.53,,56.0,1,7758

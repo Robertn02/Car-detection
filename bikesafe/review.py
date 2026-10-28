@@ -1,13 +1,14 @@
 """Review and correct the pipeline's annotations in the browser: the human-in-the-loop part of the pipeline.
 
-    python -m bikesafe.review [--reviewer NAME] [--corpus results/corpus] [--port 8765]
+    python -m bikesafe.review [--corpus results/corpus] [--port 8765]
 
-then open http://127.0.0.1:8765. Three queues, each pre-filled with what the models said:
+then open http://127.0.0.1:8765 and enter your name. Three queues, each pre-filled with what the models
+said:
 
 * **Vehicles** - the relation of a vehicle to the rider, shown as a looping clip of its track (magenta box) and a
-  zoom. Keys 1-5 pick the relation, Enter accepts the model's answer, U marks it unclear, N not a vehicle (a delivery
-  robot, a scooter, a bin), S skips, Z undoes.
-* **Signs** - each physical sign's largest view with its type and text (bikesafe.signs); pick the type, correct the
+  zoom. Keys 1-5 pick the relation, Enter accepts the model's answer (in verify mode: keeps the label), U marks it
+  unclear, N not a vehicle (a delivery robot, a scooter, a bin), S skips, Z undoes; every key has a button too.
+* **Signs** - each physical sign's largest whole view with its type and text (bikesafe.signs); pick the type, correct the
   text, or mark it "not a traffic sign".
 * **Plates** - each plate crop with the text read (bikesafe.plates); correct it or mark it unreadable.
 
@@ -26,8 +27,10 @@ learns from: model proposes, reviewer confirms or corrects, models retrain on th
     python -m bikesafe.review --import decisions.json   # the decisions made on it
     python -m bikesafe.review --import "G:/My Drive/bikesafe_runs/<video>"   # a Colab run and its decisions
 
-The exported copy has the first --per-queue items of each queue with their clips and crops; its decisions stay in the
-viewer's browser until downloaded from its Progress tab. Retrain is offered only where the decisions go to
+The exported copy has the first --per-queue items of each queue with their clips and crops - none filmed in a
+ride's privacy zones (bikesafe.gps; on a ride without GPS, its first and last NO_GPS_PRIVATE_S), as the copy is
+public; its decisions stay in the viewer's browser until downloaded (header or Progress tab). Importing them twice
+adds them once. Retrain is offered only where the decisions go to
 data/typology, beside the labelled rides: a Colab run (--labels in its Drive folder) collects decisions, and the
 models learn from them once the run is imported on that machine.
 """
@@ -61,6 +64,7 @@ REVIEW_LOG_COLUMNS = ["time", "reviewer", "kind", "video", "item", "model", "mod
 SIGN_LABEL_COLUMNS = ["video", "object_id", "frame", "x1", "y1", "x2", "y2", "label", "text", "reviewer", "time"]
 PLATE_LABEL_COLUMNS = ["video", "track_id", "frame", "x1", "y1", "x2", "y2", "text", "reviewer", "time"]
 QUEUE_SIZE = 40
+MAX_PLATE_CHARS = 8  # US plates carry at most 8 characters (California 7)
 MIN_PLATE_W, MAX_PLATE_W = 40, 300  # px; narrower plates are unreadable to a reviewer too, wider boxes are not plates
 MAX_Z_M = 15.0  # vehicles reviewed: those that came this close (where relations are validated and matter)
 MIN_BOX_H = 40
@@ -68,7 +72,9 @@ SPREAD_S = 4.0  # at most one queued vehicle per ride and this many seconds, so 
 CLIP_WIDTH = 960  # px; vehicle clips
 CLIP_CRF = 25
 CLIP_MAX_S = 8.0  # a longer track plays faster, so every clip loops in about this long
-CLIP_PAD_S = 0.5  # shown before the track starts and after it ends
+CLIP_PAD_S = 1.0  # shown before the track starts and after it ends
+MAX_PER_SIGN_TYPE = QUEUE_SIZE // 4  # a sign queue is not twenty of one type
+NO_GPS_PRIVATE_S = 180  # a ride without GPS: this much of its start and end is kept out of the public copy
 SIGN_TYPES_UI = ["stop", "yield", "speed_limit", "do_not_enter", "one_way", "no_turn", "parking", "bike", "pedestrian",
                  "warning", "street_name", "guide", "lane_use", "bus_stop", "roadwork", "other_sign", "not_a_sign"]
 
@@ -116,6 +122,13 @@ def vehicle_priority(tracks: pd.DataFrame) -> pd.DataFrame:
     t["score"] = score
     t["reasons"] = ["; ".join(r) for r in reasons]
     return t.sort_values("score", ascending=False)
+
+
+def labeller_text(who) -> str | None:
+    """Who made a label, as the page shows it: the first pass was AI-assisted (labeler claude-visual-review)."""
+    if not isinstance(who, str) or not who:
+        return None
+    return "AI-assisted review" if who.startswith("claude") else "an earlier reviewer" if who == "reviewer" else who
 
 
 def spread(items: pd.DataFrame, n: int, gap_s: float = SPREAD_S) -> pd.DataFrame:
@@ -202,7 +215,9 @@ def track_clip(video: Path, dets: pd.DataFrame, track_id: int, out: Path) -> byt
             else:
                 cv2.rectangle(image, (x1, y1), (x2, y2), (200, 200, 200), 1)
         label = f"t={frame / fps:.1f}s" + (f"  {speed}x speed" if speed > 1 else "")
-        cv2.putText(image, label, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+        cv2.rectangle(image, (0, 0), (tw + 16, th + 16), (20, 20, 20), -1)
+        cv2.putText(image, label, (8, th + 8), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
         writer.write(image)
     writer.release()
     cap.release()
@@ -274,6 +289,7 @@ class Store:
             frames.append(pd.read_csv(path))
         self.tracks = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         self._dets: dict[str, pd.DataFrame] = {}
+        self._fresh: set[str] = set()
 
     # files
     def _csv(self, name: str, columns: list[str] | None = None) -> pd.DataFrame:
@@ -329,7 +345,8 @@ class Store:
                      if hasattr(row, f"proba_{r}")}
             items.append({"kind": "vehicle", "video": row.video, "item": int(row.track_id),
                           "model": row.vehicle_relation, "proba": proba, "rule": getattr(row, "rule_relation", None),
-                          "current": getattr(row, "label", None), "reasons": row.reasons,
+                          "current": getattr(row, "label", None), "current_by": labeller_text(getattr(row, "labeler", None)),
+                          "reasons": row.reasons,
                           "t": round(float(row.t_start), 1), "z_min": round(float(row.z_min), 1),
                           "x": round(float(row.x_at_min_z), 1), "duration": round(float(row.duration_s), 1)})
         return items
@@ -343,11 +360,15 @@ class Store:
             if not (path.parent / "sign_crops.parquet").exists():
                 continue
             obj = pd.read_parquet(path)
+            calib = read_json(path.parent / "calibration.json")
             signs = obj[obj.kind.isin(["sign", "rejected_sign"])].assign(h=lambda o: o.y2 - o.y1)
+            # views cut off by the picture's edge are the largest but show part of the sign
+            whole = (signs.x1 > 2) & (signs.y1 > 2) & (signs.x2 < calib["width"] - 2) & (signs.y2 < calib["height"] - 2)
             for object_id, g in signs.groupby("object_id"):
                 if (video, int(object_id)) in keys:
                     continue
-                best = g.sort_values("h").iloc[-1]
+                views = g[whole.loc[g.index]]
+                best = (views if len(views) else g).sort_values("h").iloc[-1]
                 if best.h < 20:
                     continue
                 conf = float(best.type_conf) if pd.notna(best.type_conf) else 0.0
@@ -356,7 +377,12 @@ class Store:
                               "model": category, "model_conf": round(conf, 3), "text": str(best.sign_text or ""),
                               "h": int(best.h), "t": round(float(best.time_s), 1),
                               "score": (1 - conf) + 0.3 * (category in ("other_sign", "not_a_sign")) + best.h / 1000})
-        return sorted(items, key=lambda i: -i["score"])[:QUEUE_SIZE]
+        queue, per_type = [], {}
+        for item in sorted(items, key=lambda i: -i["score"]):
+            if per_type.get(item["model"], 0) < MAX_PER_SIGN_TYPE:
+                per_type[item["model"]] = per_type.get(item["model"], 0) + 1
+                queue.append(item)
+        return queue[:QUEUE_SIZE]
 
     def plate_queue(self) -> list[dict]:
         done = self._csv("plate_labels.csv", PLATE_LABEL_COLUMNS)
@@ -365,6 +391,7 @@ class Store:
         for path in sorted(self.analysis.glob("*/plates.parquet")):
             video = path.parent.name
             plates = pd.read_parquet(path)
+            fps = float(read_json(path.parent / "calibration.json").get("source_fps", 24.0))
             if "plate_frame" not in plates:
                 continue  # read before plate boxes were kept; re-run bikesafe.plates --overwrite
             # plates a person can read (at least MIN_PLATE_W px wide) and that are shaped like plates: the detector
@@ -375,17 +402,42 @@ class Store:
                 if (video, int(row.track_id)) in keys:
                     continue
                 read = row.plate_text if isinstance(row.plate_text, str) else ""
+                if len(read) > MAX_PLATE_CHARS:
+                    continue  # lettering on a truck or a shop sign, not a plate
                 conf = float(row.plate_conf) if pd.notna(row.plate_conf) else 0.0
                 # most useful to check: readings that are not certain (one read, or reads that disagree), then
                 # readable-sized plates the reader gave up on
                 uncertain = read != "" and (row.agreeing_reads < 2 or conf < 0.95)
                 items.append({"kind": "plate", "video": video, "item": int(row.track_id), "model": read,
                               "model_conf": round(conf, 3), "reads": str(row.all_reads or ""),
+                              "t": round(float(row.plate_frame) / fps, 1), "w": int(row.plate_x2 - row.plate_x1),
                               "score": 1.0 * uncertain + 0.5 * (read == "") + min(row.plate_x2 - row.plate_x1, 150) / 1000})
-        return sorted(items, key=lambda i: -i["score"])[:QUEUE_SIZE]
+        queue, seen = [], set()
+        for item in sorted(items, key=lambda i: -i["score"]):  # one plate read once: the same car, other tracks
+            if item["model"] and (item["video"], item["model"]) in seen:
+                continue
+            seen.add((item["video"], item["model"]))
+            queue.append(item)
+        return queue[:QUEUE_SIZE]
 
     # images and clips (cached on disk)
+    def fresh_cache(self, video: str) -> None:
+        """Empty the ride's cached clips and crops when its tables changed since they were made: after a re-run the
+        same track or object id can be another vehicle or sign."""
+        if video in self._fresh:
+            return
+        sources = [self.analysis / video / name for name in ("kinematics.parquet", "infrastructure.parquet",
+                                                             "plates.parquet", "sign_crops.parquet")]
+        stamp = str(max((int(f.stat().st_mtime) for f in sources if f.exists()), default=0)) + f"/pad{CLIP_PAD_S}"
+        marker = self.cache / video / "made_from.txt"
+        if not marker.exists() or marker.read_text() != stamp:  # unknown or older tables
+            shutil.rmtree(self.cache / video, ignore_errors=True)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(stamp)
+        self._fresh.add(video)
+
     def image(self, kind: str, video: str, item: int, row: int | None = None) -> bytes:
+        self.fresh_cache(video)
         path = self.cache / video / f"{kind}_{item}.{'mp4' if kind == 'clip' else 'jpg'}"
         if path.exists():
             return path.read_bytes()
@@ -434,9 +486,10 @@ class Store:
                 self._save_sign(video, int(d["item"]), int(d["row"]), human, str(d.get("text", "")), reviewer)
             elif kind == "plate" and human != "skip":
                 self._save_plate(video, int(d["item"]), str(d.get("text", "")).upper().strip(), reviewer)
-            self.log({"reviewer": reviewer, "kind": kind, "video": video, "item": d["item"], "model": d.get("model"),
-                      "model_conf": d.get("model_conf"), "human": human, "text": d.get("text"),
-                      "model_text": d.get("model_text")})
+            entry = {"reviewer": reviewer, "kind": kind, "video": video, "item": d["item"], "model": d.get("model"),
+                     "model_conf": d.get("model_conf"), "human": human, "text": d.get("text"),
+                     "model_text": d.get("model_text")}
+            self.log({**entry, "time": d["time"]} if d.get("time") else entry)
         return {"ok": True}
 
     def _save_vehicle(self, video: str, track_id: int, label: str, reviewer: str, d: dict) -> dict | None:
@@ -475,6 +528,8 @@ class Store:
         if label not in SIGN_TYPES_UI:
             raise ValueError(label)
         o = pd.read_parquet(self.analysis / video / "infrastructure.parquet").loc[row]
+        if int(o.object_id) != object_id:
+            raise ValueError(f"row {row} is not a view of sign {object_id}")
         labels = self._csv("sign_labels.csv", SIGN_LABEL_COLUMNS)
         labels = labels[~((labels.video == video) & (labels.object_id == object_id))]
         new = {"video": video, "object_id": object_id, "frame": int(o.frame), "x1": round(float(o.x1), 1),
@@ -493,14 +548,18 @@ class Store:
         pd.concat([labels, pd.DataFrame([new], columns=PLATE_LABEL_COLUMNS)], ignore_index=True).to_csv(
             self.labels_dir / "plate_labels.csv", index=False)
 
-    def undo(self, reviewer: str) -> dict:
-        """Take back the reviewer's last decision: the log entry, and a vehicle label it added."""
+    def undo(self, reviewer: str, expect: dict | None = None) -> dict:
+        """Take back the reviewer's last decision: the log entry, and a vehicle label it added. With `expect` (the
+        kind, video and item the page means to take back) nothing is undone unless that is the last decision."""
         with self.lock:
             log = self._csv("review_log.csv", REVIEW_LOG_COLUMNS)
             mine = log.index[log.reviewer == reviewer]
             if not len(mine):
-                return {"ok": False}
+                return {"ok": False, "reason": "nothing to undo"}
             last = log.loc[mine[-1]]
+            if expect and (str(last.kind), str(last.video), str(last["item"])) != (
+                    str(expect.get("kind")), str(expect.get("video")), str(expect.get("item"))):
+                return {"ok": False, "reason": "the last decision saved is not the one on the page"}
             if last.kind == "vehicle" and last.human != "skip":
                 labels = self._csv("track_labels.csv")
                 labels = labels.astype({c: object for c in ("label", "labeler", "notes") if c in labels})
@@ -639,7 +698,7 @@ def make_handler(store: Store, html: str):
                         raise KeyError(body["video"])
                     self.json(store.save(body))
                 elif self.path == "/api/undo":
-                    self.json(store.undo(str(body.get("reviewer") or "reviewer")))
+                    self.json(store.undo(str(body.get("reviewer") or "reviewer"), body.get("expect")))
                 elif self.path == "/api/retrain":
                     self.json(store.start_retrain())
                 else:
@@ -654,149 +713,284 @@ PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annotation review</title>
 <style>
-:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#deded9; --accent:#2b6cb0; --warn:#b7791f;
-  --ok:#2f855a; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94;
-  --line:#33332f; --accent:#63a4e8; --warn:#e0a54a; --ok:#5fc08c; } }
+:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#66665f; --line:#deded9; --accent:#2b6cb0; --on-accent:#fff;
+  --warn:#8a5a00; --ok:#2f855a; --bad:#c53030; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39d;
+  --line:#33332f; --accent:#63a4e8; --on-accent:#0b1a2b; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
 * { box-sizing:border-box; } body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
-header { display:flex; gap:12px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
-  background:var(--panel); flex-wrap:wrap; }
-header h1 { font-size:16px; margin:0 12px 0 0; } .tab { padding:6px 12px; border-radius:6px; cursor:pointer; border:1px solid transparent; }
-.tab.on { border-color:var(--line); background:var(--bg); font-weight:600; }
+header { display:flex; gap:10px 14px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
+  background:var(--panel); flex-wrap:wrap; position:sticky; top:0; z-index:5; }
+header h1 { font-size:16px; margin:0 6px 0 0; white-space:nowrap; }
+.tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; }
+.tab { padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; white-space:nowrap; }
+.tab[aria-selected=true] { border-color:var(--line); background:var(--bg); font-weight:600; }
 input, select, button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:5px 9px; }
-button { cursor:pointer; } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
-main { max-width:1180px; margin:0 auto; padding:16px; } .grid { display:grid; grid-template-columns:minmax(0,640px) 1fr; gap:16px; }
+button { cursor:pointer; } button.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+button:focus-visible, .tab:focus-visible, input:focus-visible, select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+#reviewer.missing { border-color:var(--bad); }
+.status { margin-left:auto; display:flex; gap:10px; align-items:center; }
+main { max-width:1180px; margin:0 auto; padding:16px; }
+.grid { display:grid; grid-template-columns:minmax(0,640px) minmax(0,1fr); gap:16px; align-items:start; }
 @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
 #anim { width:100%; aspect-ratio:16/9; background:#000; border-radius:6px; display:block; }
-.zoom img, .crop img { max-width:100%; border-radius:6px; display:block; } .muted { color:var(--muted); }
-.reason { color:var(--warn); } .choices { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
-.choice { padding:6px 10px; border-radius:6px; border:1px solid var(--line); cursor:pointer; user-select:none; }
-.choice.model { outline:2px solid var(--accent); } .choice kbd { font-size:12px; color:var(--muted); margin-right:4px; }
-.bar { height:8px; background:var(--accent); border-radius:4px; } table { border-collapse:collapse; } td, th { padding:3px 8px; border-bottom:1px solid var(--line); text-align:left; }
-.status { margin-left:auto; } .done { color:var(--ok); }
+.zoom img, .crop img { max-width:100%; border-radius:6px; display:block; margin:0 auto; }
+.crop img.big { width:100%; max-height:60vh; object-fit:contain; image-rendering:auto; }
+.muted { color:var(--muted); } .small { font-size:13px; } .reason { color:var(--warn); } p { margin:8px 0; }
+.choices { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+.choice { padding:6px 10px; border-radius:6px; border:1px solid var(--line); background:var(--panel); text-align:left; }
+.choice.default { outline:2px solid var(--accent); } .choice kbd { font:12px ui-monospace, monospace; color:var(--muted); margin-right:5px; }
+.choice:hover { border-color:var(--accent); }
+.bar { height:8px; background:var(--accent); border-radius:4px; min-width:1px; }
+table { border-collapse:collapse; width:100%; } td, th { padding:3px 8px; border-bottom:1px solid var(--line); text-align:left; }
+td.num { text-align:right; width:48px; font-variant-numeric:tabular-nums; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.notice { padding:8px 12px; border-radius:8px; margin:0 0 12px; border:1px solid var(--warn); color:var(--warn); }
+.notice.bad { border-color:var(--bad); color:var(--bad); }
+#toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:var(--ink); color:var(--bg);
+  padding:7px 14px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; z-index:10; }
+#toast.on { opacity:.92; }
+.hint { font-size:13px; color:var(--muted); }
+@media (hover:none) { .hint, .choice kbd { display:none; } }
+@media (max-width:600px) {
+  header { padding:8px 10px; } main { padding:10px; }
+  .decide { position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line); margin:0 -14px -14px;
+    padding:8px 14px; border-radius:0 0 10px 10px; }
+  .choices { margin:6px 0; } .choice { flex:1 1 auto; }
+}
 </style></head><body>
 <header><h1>Annotation review</h1>
-<span class="tab on" data-kind="vehicle">Vehicles</span><span class="tab" data-kind="sign">Signs</span>
-<span class="tab" data-kind="plate">Plates</span><span class="tab" data-kind="progress">Progress</span>
-<select id="mode"><option value="new">new: likely errors first</option><option value="verify">verify existing labels</option></select>
-<label>Reviewer <input id="reviewer" size="12" placeholder="your name"></label>
-<span class="status muted" id="status"></span></header>
-<main id="main"></main>
+<div class="tabs" role="tablist" aria-label="Queues">
+<button class="tab" role="tab" aria-selected="true" data-kind="vehicle">Vehicles</button>
+<button class="tab" role="tab" aria-selected="false" data-kind="sign">Signs</button>
+<button class="tab" role="tab" aria-selected="false" data-kind="plate">Plates</button>
+<button class="tab" role="tab" aria-selected="false" data-kind="progress">Progress</button></div>
+<label id="modebox">Queue <select id="mode"><option value="new">new: likely errors first</option>
+<option value="verify">verify existing labels</option></select></label>
+<label>Reviewer <input id="reviewer" size="12" placeholder="your name" autocomplete="name"></label>
+<div class="status"><span class="muted" id="status" aria-live="polite"></span><span id="savedbox"></span></div></header>
+<main id="main"></main><div id="toast" role="status" aria-live="polite"></div>
 <script>
-const RELS = [["ego_lane","in my lane"],["adjacent_same","other lane, same way"],["oncoming","oncoming"],["parked","parked"],["cross_side","side road / other roadway"]];
+const RELS = [["ego_lane","in my lane","In the lane the rider is travelling in: ahead of the rider (moving or queued at a light), or in the rider's bike lane."],
+  ["adjacent_same","other lane, same way","Going the rider's way on the rider's road, in another lane - including vehicles overtaking the rider."],
+  ["oncoming","oncoming","Coming the other way on the rider's road (no physical median between)."],
+  ["parked","parked","Left at the kerb, in a parking lane, a driveway or a lot. Stopped in traffic is not parked."],
+  ["cross_side","side road / other roadway","Not on the rider's road: side streets, traffic crossing or turning at a junction, driveways, beyond a median."]];
+const NAME = Object.fromEntries(RELS.map(([k, n]) => [k, n]));
+Object.assign(NAME, {unclear: "unclear", not_vehicle: "not a vehicle", skip: "skipped"});
 const SIGNS = __SIGNS__;
 // STATIC: the exported copy (python -m bikesafe.review --export), read from files with no server behind it; decisions
-// are kept in this browser until downloaded from the Progress tab
+// are kept in this browser until downloaded
 const STATIC = __STATIC__;
-let kind = "vehicle", queue = [], pos = 0, saved = [];
+const KEY = "bikesafe-review:";
+let kind = "vehicle", queue = [], pos = 0, saved = [], history = [], busy = false, stored = true;
 const $ = s => document.querySelector(s);
-const reviewer = () => $("#reviewer").value.trim() || "reviewer";
-try { $("#reviewer").value = localStorage.getItem("reviewer") || ""; saved = JSON.parse(localStorage.getItem("decisions") || "[]"); } catch (e) {}
-const keep = () => { try { localStorage.setItem("decisions", JSON.stringify(saved)); } catch (e) {} };
-$("#reviewer").addEventListener("change", () => { try { localStorage.setItem("reviewer", $("#reviewer").value); } catch (e) {} });
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => { document.querySelectorAll(".tab").forEach(x => x.classList.remove("on")); t.classList.add("on"); kind = t.dataset.kind; load(); });
-$("#mode").onchange = load;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+const name = k => NAME[k] || String(k ?? "-").replace(/_/g, " ");
+const readable = t => /[A-Za-z]{3}|\d\s?[AP]M/.test(t || "");
+const clock = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+const ride = v => `ride ${String(v).slice(-1)}`;
+function get(k, fallback) { try { return localStorage.getItem(KEY + k) ?? localStorage.getItem(k) ?? fallback; } catch (e) { return fallback; } }
+function put(k, v) { try { localStorage.setItem(KEY + k, v); return true; } catch (e) { return false; } }
+$("#reviewer").value = get("reviewer", "");
+try { saved = JSON.parse(get("decisions", "[]")) || []; } catch (e) { saved = []; }
+const decided = () => saved.filter(d => d.label !== "skip").length;
+function keep() { stored = put("decisions", JSON.stringify(saved)); savedBox(); }
+function savedBox() {
+  if (!STATIC) return;
+  $("#savedbox").innerHTML = `<span class="muted">${decided()} saved here</span> <button id="dl" class="primary">Download</button>`;
+  $("#dl").onclick = download;
+}
+function download() {
+  const who = ($("#reviewer").value.trim() || "reviewer").replace(/[^\w-]+/g, "_");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(saved, null, 1)], {type: "application/json"}));
+  a.download = `decisions_${who}_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+}
+function toast(text) { const t = $("#toast"); t.textContent = text; t.classList.add("on"); clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("on"), 1400); }
+$("#reviewer").addEventListener("input", () => { put("reviewer", $("#reviewer").value); $("#reviewer").classList.remove("missing"); });
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t ? "true" : "false"));
+  kind = t.dataset.kind; history = []; load(); });
+$("#mode").onchange = () => { $("#mode").blur(); history = []; load(); };
 const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" ? "mp4" : "jpg"}`
   : `/api/img?kind=${k}&video=${encodeURIComponent(it.video)}&item=${it.item}${extra}`;
 async function load() {
-  if (kind === "progress") return progress();
+  $("#modebox").style.display = kind === "vehicle" ? "" : "none";
+  if (kind === "progress") { $("#status").textContent = ""; return progress(); }
   $("#main").innerHTML = '<p class="muted">Loading the queue...</p>';
   const wanted = kind + $("#mode").value;
-  const r = await fetch(STATIC ? `queue_${kind === "vehicle" ? "vehicle_" + $("#mode").value : kind}.json` : `/api/queue?kind=${kind}&mode=${$("#mode").value}`);
-  const items = await r.json();
+  let items;
+  try {
+    const r = await fetch(STATIC ? `queue_${kind === "vehicle" ? "vehicle_" + $("#mode").value : kind}.json` : `/api/queue?kind=${kind}&mode=${$("#mode").value}`);
+    items = await r.json();
+  } catch (e) {
+    $("#main").innerHTML = `<div class="notice bad">Could not load the queue (${esc(e.message)}). ${STATIC ? "Open the page from a web server (the project page), not as a file." : "Is the review server still running?"}</div>`;
+    return;
+  }
   if (kind + $("#mode").value !== wanted) return;  // another tab or mode was picked while this queue loaded
   queue = items; pos = 0;
-  if (STATIC && Array.isArray(queue)) queue = queue.filter(it => !saved.some(s => s.kind === it.kind && s.video === it.video && s.item === it.item));
+  if (STATIC && Array.isArray(queue))  // decided items stay done; skipped ones come back
+    queue = queue.filter(it => !saved.some(s => s.label !== "skip" && s.kind === it.kind && s.video === it.video && s.item === it.item));
   show();
 }
 function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else { new Image().src = img("plate", it); } } }
+const notices = () => (!stored ? `<div class="notice bad">This browser is not keeping your decisions (a private window, or storage is blocked): download them before you close the page.</div>` : "");
+const undoButton = () => history.length ? `<button id="undo">Undo <span class="hint">(Z)</span></button>` : "";
 function show() {
-  if (queue.error) { $("#main").innerHTML = `<p>${queue.error}</p>`; return; }
-  if (pos >= queue.length) { $("#main").innerHTML = `<div class="card"><p>Queue done. ${STATIC ? "Download your decisions under Progress." : "Reload for more, or Retrain under Progress."}</p></div>`; return; }
+  window.scrollTo(0, 0);
+  if (!Array.isArray(queue)) { $("#main").innerHTML = `<div class="notice bad">${esc(queue.error || "No queue")}</div>`; return; }
+  if (pos >= queue.length) {
+    $("#status").textContent = queue.length ? `${queue.length} / ${queue.length}` : "";
+    $("#main").innerHTML = `${notices()}<div class="card"><p>${queue.length ? `Queue done - ${history.length} decided in this visit.` : "Nothing to review in this queue."}
+      ${STATIC ? "Your decisions stay in this browser until you download them." : "Reload for more, or Retrain under Progress."}</p>
+      <div class="actions">${STATIC && decided() ? '<button class="primary" id="dl2">Download decisions</button>' : ""}${undoButton()}</div></div>`;
+    if ($("#dl2")) $("#dl2").onclick = download;
+    if ($("#undo")) $("#undo").onclick = undo;
+    return;
+  }
   const it = queue[pos]; $("#status").textContent = `${pos + 1} / ${queue.length}`;
   if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else showPlate(it);
+  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
+  if ($("#undo")) $("#undo").onclick = undo;
   prefetch();
 }
+function choiceButtons(list, preset) {
+  return list.map(([v, label, key, tip]) => `<button class="choice ${v === preset ? "default" : ""}" data-v="${v}" ${tip ? `title="${esc(tip)}"` : ""}><kbd>${key}</kbd>${esc(label)}</button>`).join("");
+}
 function showVehicle(it) {
-  const probs = Object.entries(it.proba).sort((a,b) => b[1]-a[1]).map(([k,v]) => `<tr><td>${k}</td><td style="width:140px"><div class="bar" style="width:${Math.round(v*100)}%"></div></td><td>${Math.round(v*100)}%</td></tr>`).join("");
-  $("#main").innerHTML = `<div class="grid"><div class="card"><video id="anim" src="${img("clip", it)}" autoplay muted loop playsinline></video><p class="muted">${it.video} &middot; t=${it.t}s &middot; closest ${it.z_min} m, ${it.x} m to the side &middot; ${it.duration} s</p></div>
-  <div class="card"><div class="zoom"><img src="${img("zoom", it)}" alt="vehicle"></div>
-  <p>Model: <b>${it.model}</b>${it.current ? ` &middot; label now: <b>${it.current}</b>` : ""} &middot; rules: ${it.rule}</p>
-  ${it.reasons ? `<p class="reason">${it.reasons}</p>` : ""}<table>${probs}</table>
-  <div class="choices">${RELS.map(([k,n],i) => `<span class="choice ${k===it.model?"model":""}" data-v="${k}"><kbd>${i+1}</kbd>${n}</span>`).join("")}
-  <span class="choice" data-v="unclear"><kbd>U</kbd>unclear</span><span class="choice" data-v="not_vehicle"><kbd>N</kbd>not a vehicle</span>
-  <span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div>
-  <p class="muted">Enter accepts the model &middot; Z undoes the last decision</p></div></div>`;
-  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
+  const verify = !!it.current, preset = verify ? it.current : it.model;
+  const probs = RELS.filter(([k]) => it.proba && k in it.proba).map(([k, n]) => `<tr><td>${n}</td><td style="width:45%"><div class="bar" style="width:${Math.round(it.proba[k]*100)}%"></div></td><td class="num">${Math.round(it.proba[k]*100)}%</td></tr>`).join("");
+  const choices = [...RELS.map(([k, n, tip], i) => [k, n, i + 1, tip]), ["unclear", "unclear", "U", "Too small, dark or occluded, or the box jumps between vehicles."],
+    ["not_vehicle", "not a vehicle", "N", "A scooter, bicycle, delivery robot, bin..."], ["skip", "skip", "S", "Decide later."]];
+  $("#main").innerHTML = `${notices()}<div class="grid"><div class="card"><video id="anim" src="${img("clip", it)}" autoplay muted loop playsinline controls></video>
+    <p class="muted small"><b>Magenta box: the vehicle to judge</b> &middot; grey: other vehicles &middot; ${ride(it.video)} at ${clock(it.t)} &middot; closest ${it.z_min} m ahead, ${Math.abs(it.x)} m to the ${it.x < 0 ? "left" : "right"} &middot; seen ${it.duration} s</p>
+    <p class="muted small">${esc(it.video)}</p></div>
+  <div class="card"><div class="zoom"><img src="${img("zoom", it)}" alt="the vehicle, close up"></div>
+  <p>Model: <b>${name(it.model)}</b>${it.rule && it.rule !== it.model ? ` &middot; <span class="muted">rule of thumb: ${name(it.rule)}</span>` : ""}</p>
+  ${verify ? `<p>Labelled <b>${name(it.current)}</b> by ${esc(it.current_by || "an earlier reviewer")}: keep it or correct it.</p>` : ""}
+  ${it.reasons && !verify ? `<p class="reason">Why it is here: ${esc(it.reasons)}</p>` : ""}<table>${probs}</table>
+  <div class="decide"><div class="choices">${choiceButtons(choices, preset)}</div>
+  <div class="actions"><button class="primary" id="accept">${verify ? "Keep" : "Accept"} ${esc(name(preset))} <span class="hint">(Enter)</span></button>${undoButton()}</div></div>
+  <p class="hint">Hover a choice for what it means &middot; keys 1-5, U, N, S &middot; Z undoes</p></div></div>`;
+  $("#accept").onclick = () => decide(preset);
 }
 function showSign(it) {
-  $("#main").innerHTML = `<div class="grid"><div class="card crop"><img src="${img("signctx", it, `&row=${it.row}`)}" alt="context"></div>
-  <div class="card"><div class="crop"><img src="${img("sign", it, `&row=${it.row}`)}" alt="sign"></div>
-  <p>Model: <b>${it.model}</b> (${Math.round(it.model_conf*100)}%) &middot; ${it.h} px tall &middot; ${it.video} t=${it.t}s</p>
-  <label>Text <input id="text" size="34" value="${(it.text||"").replace(/"/g,"&quot;")}"></label>
-  <div class="choices">${SIGNS.map(([k,key]) => `<span class="choice ${k===it.model?"model":""}" data-v="${k}"><kbd>${key}</kbd>${k.replace(/_/g," ")}</span>`).join("")}
-  <span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div><p class="muted">Enter accepts the model's type with the text as written &middot; T edits the text</p></div></div>`;
-  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
+  const text = readable(it.text) ? it.text : "";
+  const conf = it.model_conf > 0 ? ` (${Math.round(it.model_conf*100)}% sure)` : it.model === "other_sign" ? " (type not decided)" : "";
+  $("#main").innerHTML = `${notices()}<div class="grid"><div class="card crop"><img src="${img("signctx", it, `&row=${it.row}`)}" alt="the sign in its surroundings">
+    <p class="muted small">Yellow box: the sign &middot; ${ride(it.video)} at ${clock(it.t)} &middot; ${it.h} px tall</p></div>
+  <div class="card"><div class="crop"><img class="big" src="${img("sign", it, `&row=${it.row}`)}" alt="the sign"></div>
+  <p>Model: <b>${name(it.model)}</b>${conf}</p>
+  <label>What it says <input id="text" size="30" value="${esc(text)}" placeholder="${esc(it.text && !text ? "read: " + it.text : "")}"></label>
+  <div class="decide"><div class="choices">${choiceButtons([...SIGNS.map(([k, key]) => [k, k.replace(/_/g, " "), key.toUpperCase()]), ["skip", "skip", "S"]], it.model)}</div>
+  <div class="actions"><button class="primary" id="accept">Accept ${esc(name(it.model))} <span class="hint">(Enter)</span></button>${undoButton()}</div></div>
+  <p class="hint">T edits the text, Esc leaves it &middot; Z undoes</p></div></div>`;
+  $("#accept").onclick = () => decide(it.model);
+}
+function reads(r) {
+  const counts = {};
+  for (const part of String(r || "").split("|")) { const t = part.split(":")[0]; if (t) counts[t] = (counts[t] || 0) + 1; }
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${esc(t)}${n > 1 ? ` &times;${n}` : ""}`).join(", ") || "none";
 }
 function showPlate(it) {
-  $("#main").innerHTML = `<div class="grid"><div class="card crop"><img src="${img("plate", it)}" alt="plate"></div>
-  <div class="card"><p>Read: <b>${it.model || "(nothing confident)"}</b> &middot; reads: <span class="muted">${it.reads}</span></p>
-  <label>Plate <input id="text" size="12" value="${it.model}"></label>
-  <div class="choices"><span class="choice model" data-v="read"><kbd>Enter</kbd>save text</span><span class="choice" data-v="unreadable"><kbd>X</kbd>unreadable</span><span class="choice" data-v="skip"><kbd>S</kbd>skip</span></div></div></div>`;
-  document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
-  $("#text").focus();
+  $("#main").innerHTML = `${notices()}<div class="grid"><div class="card crop"><img class="big" src="${img("plate", it)}" alt="the plate">
+    <p class="muted small">Yellow box: the plate &middot; ${ride(it.video)}${it.t !== undefined ? ` at ${clock(it.t)}` : ""}${it.w ? ` &middot; ${it.w} px wide` : ""}</p></div>
+  <div class="card"><p>Read: <b>${esc(it.model) || "(nothing confident)"}</b> &middot; <span class="muted">reads: ${reads(it.reads)}</span></p>
+  <label>Plate <input id="text" size="12" value="${esc(it.model)}" autocapitalize="characters" spellcheck="false"></label>
+  <div class="decide"><div class="choices">${choiceButtons([["read", "save the text", "Enter"], ["unreadable", "unreadable", "X"], ["skip", "skip", "S"]], "read")}</div>
+  <div class="actions">${undoButton()}</div></div>
+  <p class="hint">T edits the plate, Enter saves it, Esc leaves the field &middot; Z undoes</p></div></div>`;
 }
 async function decide(v) {
-  const it = queue[pos]; if (!it) return;
-  const text = $("#text") ? $("#text").value : "";
-  let label = v, out = {kind: it.kind, video: it.video, item: it.item, row: it.row, model: it.model, model_conf: it.model_conf || Math.max(...Object.values(it.proba || {0:0})), reviewer: reviewer()};
-  if (it.kind === "plate") { label = v === "skip" ? "skip" : "plate"; out.text = v === "unreadable" ? "" : text; out.model_text = it.model; out.model = "plate"; }
+  const it = queue[pos]; if (!it || busy) return;
+  if (!$("#reviewer").value.trim()) { $("#reviewer").classList.add("missing"); $("#reviewer").focus(); toast("Enter your name first"); return; }
+  const text = $("#text") ? $("#text").value.trim() : "";
+  if (it.kind === "plate" && v === "read" && !text) { toast("Type the plate, or X for unreadable"); return; }
+  let label = v, out = {kind: it.kind, video: it.video, item: it.item, row: it.row, model: it.model, model_conf: it.model_conf ?? Math.max(...Object.values(it.proba || {0:0})), reviewer: $("#reviewer").value.trim()};
+  if (it.kind === "plate") { label = v === "skip" ? "skip" : "plate"; out.text = v === "unreadable" ? "" : text.toUpperCase(); out.model_text = it.model; out.model = "plate"; }
   else if (it.kind === "sign") { out.text = text; out.model_text = it.text; }
-  out.label = label;
-  if (STATIC) { saved.push({...out, time: new Date().toISOString()}); keep(); pos += 1; show(); return; }
-  const r = await (await fetch("/api/label", {method:"POST", body: JSON.stringify(out)})).json();
-  if (r.error) { alert(r.error); return; } pos += 1; show();
+  out.label = label; out.time = new Date().toISOString();
+  busy = true;
+  try {
+    if (STATIC) { saved.push(out); keep(); }
+    else {
+      const r = await (await fetch("/api/label", {method:"POST", body: JSON.stringify(out)})).json();
+      if (r.error) throw new Error(r.error);
+    }
+    history.push({pos, out});
+    toast(it.kind === "plate" ? (v === "unreadable" ? "Saved: unreadable" : v === "skip" ? "Skipped" : `Saved: ${out.text}`) : (v === "skip" ? "Skipped" : `Saved: ${name(v)}`));
+    pos += 1; show();
+  } catch (e) { toast(`Not saved: ${e.message}`); }
+  finally { busy = false; }
 }
 document.addEventListener("keydown", e => {
-  if (kind === "progress" || !queue[pos]) return;
-  const typing = document.activeElement && document.activeElement.id === "text";
-  if (kind === "plate") { if (e.key === "Enter") decide("read"); else if (!typing && e.key.toLowerCase() === "x") decide("unreadable"); else if (!typing && e.key.toLowerCase() === "s") decide("skip"); return; }
-  if (typing) { if (e.key === "Enter") { decide(queue[pos].model); } if (e.key === "Escape") document.activeElement.blur(); return; }
+  if (kind === "progress" || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+  const t = e.target, typing = t && t.id === "text";
+  if (t && (t.tagName === "SELECT" || (t.tagName === "INPUT" && !typing) || t.tagName === "TEXTAREA")) return;
   const k = e.key.toLowerCase();
-  if (e.key === "Enter") decide(queue[pos].model);
-  else if (k === "z") undo();
-  else if (k === "s") decide("skip");
-  else if (kind === "vehicle" && "12345".includes(k)) decide(RELS[+k - 1][0]);
-  else if (kind === "vehicle" && k === "u") decide("unclear");
-  else if (kind === "vehicle" && k === "n") decide("not_vehicle");
-  else if (kind === "sign" && k === "t") { e.preventDefault(); $("#text").focus(); }
-  else if (kind === "sign") { const hit = SIGNS.find(([, key]) => key === k); if (hit) decide(hit[0]); }
+  if (typing) {
+    if (e.key === "Enter") { e.preventDefault(); decide(kind === "plate" ? "read" : queue[pos] && queue[pos].model); }
+    else if (e.key === "Escape") t.blur();
+    return;
+  }
+  const it = queue[pos];
+  let act = null;  // the key's action; the key itself goes nowhere else (not into a field focused meanwhile)
+  if (k === "z") act = undo;
+  else if (it && e.key === "Enter") act = () => decide(kind === "plate" ? "read" : (it.current || it.model));
+  else if (it && kind !== "vehicle" && k === "t") act = () => $("#text").focus();
+  else if (it && k === "s") act = () => decide("skip");
+  else if (it && kind === "plate") { if (k === "x") act = () => decide("unreadable"); }
+  else if (it && kind === "vehicle") {
+    if (k.length === 1 && "12345".includes(k)) act = () => decide(RELS[+k - 1][0]);
+    else if (k === "u") act = () => decide("unclear"); else if (k === "n") act = () => decide("not_vehicle");
+  }
+  else if (it) { const hit = SIGNS.find(([, key]) => key === k); if (hit) act = () => decide(hit[0]); }
+  if (act) { e.preventDefault(); act(); }
 });
 async function undo() {
-  if (STATIC) { if (saved.length && pos > 0) { saved.pop(); keep(); pos -= 1; show(); } return; }
-  const r = await (await fetch("/api/undo", {method:"POST", body: JSON.stringify({reviewer: reviewer()})})).json(); if (r.ok && pos > 0) { pos -= 1; show(); }
+  const last = history[history.length - 1]; if (!last || busy) return;
+  busy = true;
+  try {
+    if (STATIC) {
+      const i = saved.lastIndexOf(saved.find(s => s.time === last.out.time && s.item === last.out.item && s.video === last.out.video));
+      if (i >= 0) { saved.splice(i, 1); keep(); }
+    } else {
+      const r = await (await fetch("/api/undo", {method:"POST", body: JSON.stringify({reviewer: last.out.reviewer,
+        expect: {kind: last.out.kind, video: last.out.video, item: last.out.item}})})).json();
+      if (!r.ok) throw new Error(r.reason || r.error || "not undone");
+    }
+    history.pop(); pos = last.pos; toast("Undone"); show();
+  } catch (e) { toast(`Could not undo: ${e.message}`); }
+  finally { busy = false; }
 }
 function staticProgress() {
-  $("#main").innerHTML = `<div class="card"><p>A copy of the review page that needs no server: the queues are as they were when it was made, and
-    your decisions stay in this browser - <b>${saved.length}</b> so far.</p>
-    <p><button class="primary" id="dl">Download decisions</button> <button id="clear">Clear them</button></p>
-    <p class="muted">To add them to the labels: <code>python -m bikesafe.review --import decisions.json</code>, then Retrain.</p></div>`;
-  $("#dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(saved, null, 1)], {type: "application/json"})); a.download = "decisions.json"; a.click(); };
+  const kinds = ["vehicle", "sign", "plate"].map(k => `${saved.filter(d => d.kind === k && d.label !== "skip").length} ${k}s`).join(", ");
+  const recent = saved.slice(-8).reverse().map(d => `<tr><td>${esc(d.kind)}</td><td>${ride(d.video)}</td><td>${esc(d.kind === "plate" ? (d.text || "unreadable") : name(d.label))}</td><td class="muted">${esc((d.time || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("");
+  $("#main").innerHTML = `${notices()}<div class="card"><p>A copy of the review page that needs no server: the queues are as they were when it was made, and
+    your decisions stay in this browser - <b>${decided()}</b> so far (${kinds}).</p>
+    <p><button class="primary" id="dl3">Download decisions</button> <button id="clear">Clear them</button></p>
+    <p class="muted">Send the file to the project; it is added to the labels with <code>python -m bikesafe.review --import decisions.json</code>, then Retrain.</p>
+    ${recent ? `<table><tr><th>queue</th><th>ride</th><th>decision</th><th>when</th></tr>${recent}</table>` : ""}</div>`;
+  $("#dl3").onclick = download;
   $("#clear").onclick = () => { if (confirm("Delete the decisions kept in this browser?")) { saved = []; keep(); staticProgress(); } };
 }
 async function progress() {
   if (STATIC) return staticProgress();
-  const p = await (await fetch("/api/progress")).json();
-  const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${k}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
-    ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${c.model}</td><td>${c.human}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
-  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${k} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
-    ${p.retrainable ? `<p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${p.retrain.state}: ${p.retrain.log}</span></p>`
-      : `<p>Decisions are saved in <code>${p.labels_dir}</code>. The models learn from them on the machine with the labelled rides:
+  let p;
+  try { p = await (await fetch("/api/progress")).json(); } catch (e) { $("#main").innerHTML = `<div class="notice bad">Could not reach the review server.</div>`; return; }
+  if (kind !== "progress") return;
+  const label = (k, v) => k === "plate" ? (v || "-") : name(v);
+  const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${esc(k)}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
+    ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${esc(label(k, c.model))}</td><td>${esc(label(k, c.human))}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
+  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${esc(k)} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
+    ${p.retrainable ? `<p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${esc(p.retrain.state)}: ${esc(p.retrain.log)}</span></p>`
+      : `<p>Decisions are saved in <code>${esc(p.labels_dir)}</code>. The models learn from them on the machine with the labelled rides:
       there, <code>python -m bikesafe.review --import &lt;this run's folder&gt;</code> adds this run and its decisions, then Retrain.</p>`}</div>${blocks}`;
-  if (p.retrainable) $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; };
-  if (p.retrain.state === "running") setTimeout(progress, 5000);
+  if (p.retrainable) $("#retrain").onclick = async () => { const r = await (await fetch("/api/retrain", {method:"POST", body:"{}"})).json(); $("#rt").textContent = `${r.state}: ${r.log}`; if (r.state === "running") setTimeout(progress, 5000); };
+  if (p.retrain.state === "running") setTimeout(() => { if (kind === "progress") progress(); }, 5000);
 }
+savedBox();
 load();
 </script></body></html>
 """
@@ -811,16 +1005,41 @@ def page(static: bool = False) -> str:
 MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"]}
 
 
+def private_seconds(corpus: Path, video: str) -> set[int]:
+    """Seconds of the ride filmed in its privacy zones (gps_1s.csv, bikesafe.gps); for a ride without GPS, its first
+    and last NO_GPS_PRIVATE_S, where it starts and ends (usually home or work)."""
+    gps = corpus / video / "gps_1s.csv"
+    if gps.exists():
+        g = pd.read_csv(gps, usecols=["second", "in_privacy_zone"])
+        return set(g.second[g.in_privacy_zone.astype(bool)].astype(int))
+    timeline = corpus / video / "timeline_1s.csv"
+    n = len(pd.read_csv(timeline, usecols=["second"])) if timeline.exists() else 0
+    return set(range(0, min(n, NO_GPS_PRIVATE_S))) | set(range(max(0, n - NO_GPS_PRIVATE_S), n))
+
+
+def item_seconds(it: dict) -> range:
+    """The seconds of the ride an item's media show."""
+    start = float(it.get("t") or 0.0)
+    return range(int(start - CLIP_PAD_S - 1), int(start + float(it.get("duration") or 0.0) + CLIP_PAD_S) + 2)
+
+
 def export(store: Store, out: Path, per_queue: int) -> None:
     """The page as files that need no server (GitHub Pages, any web host): the first `per_queue` items of each queue
-    with their clips and crops. Decisions made there stay in the viewer's browser until downloaded (Progress tab);
-    --import adds them to the labels."""
+    with their clips and crops, leaving out those filmed in a ride's privacy zones (private_seconds) - the copy is
+    public. Decisions made there stay in the viewer's browser until downloaded; --import adds them to the labels."""
     shutil.rmtree(out / "media", ignore_errors=True)
     queues = {"vehicle_new": store.vehicle_queue("new"), "vehicle_verify": store.vehicle_queue("verify"),
               "sign": store.sign_queue(), "plate": store.plate_queue()}
+    private: dict[str, set[int]] = {}
     for name, items in queues.items():
-        kept = []
-        for it in items[:per_queue]:
+        kept, hidden = [], 0
+        for it in items:
+            if len(kept) >= per_queue:
+                break
+            zone = private.setdefault(it["video"], private_seconds(store.corpus, it["video"]))
+            if any(sec in zone for sec in item_seconds(it)):
+                hidden += 1
+                continue
             files = {kind: store.image(kind, it["video"], it["item"], it.get("row")) for kind in MEDIA[it["kind"]]}
             if not all(files.values()):
                 continue
@@ -830,19 +1049,37 @@ def export(store: Store, out: Path, per_queue: int) -> None:
                 path.write_bytes(data)
             kept.append(it)
         (out / f"queue_{name}.json").write_text(json.dumps(clean(kept), default=str), encoding="utf-8")
-        print(f"{name}: {len(kept)} items", flush=True)
+        print(f"{name}: {len(kept)} items ({hidden} left out: privacy zones)", flush=True)
     (out / "index.html").write_text(page(static=True), encoding="utf-8")
 
 
-def import_decisions(store: Store, path: Path) -> int:
-    """Decisions downloaded from an exported page, saved as if they had been made here (reviewer names kept)."""
+VALID_LABELS = {"vehicle": set(RELATIONS) | {"unclear", "not_vehicle", "skip"}, "sign": set(SIGN_TYPES_UI) | {"skip"},
+                "plate": {"plate", "skip"}}
+
+
+def import_decisions(store: Store, path: Path) -> tuple[int, int]:
+    """Decisions downloaded from an exported page, saved as if they had been made here (reviewer names and times
+    kept). All are checked before any is saved, and a decision already in the review log (same reviewer, time, kind,
+    ride and item: the same file imported twice) is skipped. Returns (added, skipped)."""
     decisions = json.loads(path.read_text(encoding="utf-8"))
     unknown = {d["video"] for d in decisions if not store.known_video(d["video"])}
     if unknown:
         raise SystemExit(f"rides not in {store.perception}: {', '.join(sorted(unknown))}")
+    bad = [d for d in decisions if d.get("label") not in VALID_LABELS.get(d.get("kind"), set())]
+    if bad:
+        raise SystemExit(f"{len(bad)} decisions with an unknown kind or label, e.g. {bad[0]}; nothing imported")
+    log = store._csv("review_log.csv", REVIEW_LOG_COLUMNS)
+    done = set(zip(log.reviewer.astype(str), log.time.astype(str), log.kind.astype(str), log.video.astype(str),
+                   log["item"].astype(str)))
+    added = 0
     for d in decisions:
+        key = (str(d.get("reviewer") or "reviewer")[:40], str(d.get("time")), d["kind"], d["video"], str(d["item"]))
+        if key in done:
+            continue
         store.save(d)
-    return len(decisions)
+        done.add(key)
+        added += 1
+    return added, len(decisions) - added
 
 
 def import_run(store: Store, run: Path) -> str:
@@ -912,7 +1149,8 @@ def main() -> None:
         if args.import_.is_dir():
             print(import_run(store, args.import_))
         else:
-            print(f"added {import_decisions(store, args.import_)} decisions to {args.labels}")
+            added, skipped = import_decisions(store, args.import_)
+            print(f"added {added} decisions to {args.labels}" + (f" ({skipped} already there)" if skipped else ""))
         return
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(store, page()))
     print(f"review at http://127.0.0.1:{args.port}  ({len(store.tracks)} tracks from {args.corpus})", flush=True)

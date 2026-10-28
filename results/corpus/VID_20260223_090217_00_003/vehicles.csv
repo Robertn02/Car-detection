@@ -288,7 +288,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 1348,2026-02-23T09:04:35,138.08,148.92,10.84,parked,parked,parked,0.644,,True,car,4.7,-5.39,left,0.0,0.0,,194.0,1,1348
 1350,2026-02-23T09:04:35,138.33,142.5,4.17,parked,parked,parked,0.773,,True,car,4.6,-5.04,left,0.0,0.02,,214.0,1,1350
 1352,2026-02-23T09:04:35,138.42,138.67,0.25,oncoming,oncoming,sharing_road,0.298,model unsure,False,car,30.6,-39.7,left,0.0,0.0,,50.0,1,1352
-1359,2026-02-23T09:04:35,138.75,139.92,1.17,parked,parked,parked,0.395,model unsure,True,car,15.0,17.16,right,0.0,0.0,,81.0,1,1359
+1359,2026-02-23T09:04:35,138.75,139.92,1.17,parked,parked,parked,0.395,model unsure,False,car,15.0,17.16,right,0.0,0.0,,81.0,1,1359
 1364,2026-02-23T09:04:36,139.08,143.0,3.92,parked,parked,parked,0.784,,True,car,4.6,-4.61,left,0.0,0.14,,206.0,1,1364
 1369,2026-02-23T09:04:36,139.33,153.92,14.59,side road / other roadway,cross_side,not_sharing,0.498,,True,car,1.4,-0.81,left,0.0,0.0,8NNZ471,757.0,1,1369
 1371,2026-02-23T09:04:36,139.58,144.25,4.67,parked,parked,parked,0.688,,True,car,1.6,0.55,right,0.0,0.09,8EEN775,704.0,2,1371 1394
@@ -349,9 +349,9 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 1581,2026-02-23T09:05:14,177.67,181.33,3.66,parked,parked,parked,0.57,,True,car,5.9,-6.54,left,0.0,0.0,,164.0,1,1581
 1583,2026-02-23T09:05:14,177.83,181.17,3.34,oncoming,oncoming,sharing_road,0.809,,True,car,12.5,-10.31,left,0.0,0.0,,88.0,1,1583
 1587,2026-02-23T09:05:15,178.42,179.92,1.5,parked,parked,parked,0.885,,True,car,1.4,0.65,right,0.0,0.0,9END904,696.0,1,1587
-1595,2026-02-23T09:05:17,180.17,191.92,11.75,parked,parked,parked,0.403,model unsure,True,car,1.1,0.32,right,0.0,0.0,EM48D24,1052.0,5,1595 1624 1641 1655 1671
+1595,2026-02-23T09:05:17,180.17,191.92,11.75,parked,parked,parked,0.403,model unsure,True,truck,1.1,0.32,right,0.0,0.0,EM48D24,1052.0,5,1595 1624 1641 1655 1671
 1600,2026-02-23T09:05:18,181.42,181.42,0.0,parked,parked,parked,0.546,,False,car,15.5,-21.96,left,0.0,0.0,,55.0,1,1600
-1601,2026-02-23T09:05:18,181.75,185.08,3.33,parked,parked,parked,0.298,model unsure,True,car,10.5,-1.86,left,0.0,0.0,,35.0,1,1601
+1601,2026-02-23T09:05:18,181.75,185.08,3.33,parked,parked,parked,0.298,model unsure,False,car,10.5,-1.86,left,0.0,0.0,,35.0,1,1601
 1602,2026-02-23T09:05:18,181.83,183.42,1.59,parked,parked,parked,0.361,model unsure,True,car,9.7,-4.97,left,0.0,0.0,,39.0,1,1602
 1603,2026-02-23T09:05:18,181.92,182.67,0.75,parked,parked,parked,0.633,,False,car,8.3,9.78,right,0.0,0.0,,140.0,1,1603
 1605,2026-02-23T09:05:19,182.08,183.58,1.5,side road / other roadway,cross_side,not_sharing,0.462,,True,car,9.0,10.14,right,0.0,0.0,,91.0,1,1605
@@ -508,7 +508,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 2139,2026-02-23T09:06:06,229.58,230.42,0.84,side road / other roadway,cross_side,not_sharing,0.298,model unsure,False,car,44.9,4.85,right,1.0,0.0,,21.0,1,2139
 2140,2026-02-23T09:06:06,229.58,234.08,4.5,side road / other roadway,cross_side,not_sharing,0.622,,False,car,42.1,12.46,right,1.0,0.0,,23.0,1,2140
 2142,2026-02-23T09:06:06,229.92,230.42,0.5,side road / other roadway,cross_side,not_sharing,0.311,model unsure,False,car,29.8,10.7,right,1.0,0.0,,31.0,1,2142
-2148,2026-02-23T09:06:08,231.33,239.83,8.5,side road / other roadway,cross_side,not_sharing,0.91,,True,truck,8.2,8.55,right,1.0,0.0,,142.0,5,2148 2164 2165 2167 2170
+2148,2026-02-23T09:06:08,231.33,239.83,8.5,side road / other roadway,cross_side,not_sharing,0.91,,True,car,8.2,8.55,right,1.0,0.0,,142.0,5,2148 2164 2165 2167 2170
 2151,2026-02-23T09:06:09,232.25,233.5,1.25,side road / other roadway,cross_side,not_sharing,0.487,,False,car,35.8,2.21,right,1.0,0.0,,26.0,1,2151
 2152,2026-02-23T09:06:09,232.25,240.25,8.0,side road / other roadway,cross_side,not_sharing,0.532,,False,car,51.5,14.57,right,1.0,0.0,,19.0,1,2152
 2153,2026-02-23T09:06:09,232.5,266.08,33.58,side road / other roadway,cross_side,not_sharing,0.667,,True,car,5.6,-3.57,left,0.84,0.01,,211.0,2,2153 2311
@@ -524,7 +524,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 2175,2026-02-23T09:06:15,238.25,238.83,0.58,side road / other roadway,cross_side,not_sharing,0.374,model unsure,False,car,85.2,12.07,right,1.0,0.0,,15.0,1,2175
 2177,2026-02-23T09:06:18,241.33,264.67,23.34,side road / other roadway,cross_side,not_sharing,0.528,,True,car,11.7,-0.27,left,0.7,0.0,,88.0,1,2177
 2178,2026-02-23T09:06:19,242.0,242.08,0.08,parked,parked,parked,0.332,model unsure,False,car,6.9,9.15,right,1.0,0.0,,143.0,1,2178
-2179,2026-02-23T09:06:19,242.5,258.25,15.75,side road / other roadway,cross_side,not_sharing,0.824,,True,truck,11.5,-12.05,left,1.0,0.01,,124.0,10,2179 2193 2195 2198 2199 2203 2206 2209 2217 2233
+2179,2026-02-23T09:06:19,242.5,258.25,15.75,side road / other roadway,cross_side,not_sharing,0.824,,True,car,11.5,-12.05,left,1.0,0.01,,124.0,10,2179 2193 2195 2198 2199 2203 2206 2209 2217 2233
 2180,2026-02-23T09:06:20,243.25,266.5,23.25,side road / other roadway,cross_side,not_sharing,0.532,,True,car,11.2,-7.33,left,0.76,0.0,,98.0,2,2180 2230
 2192,2026-02-23T09:06:23,246.75,267.42,20.67,parked,parked,parked,0.479,,True,car,1.5,0.71,right,0.54,0.01,8LPZ378,613.0,1,2192
 2194,2026-02-23T09:06:23,246.92,247.42,0.5,side road / other roadway,cross_side,not_sharing,0.395,model unsure,False,car,9.5,12.44,right,1.0,0.03,,111.0,1,2194
@@ -723,7 +723,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 2892,2026-02-23T09:07:41,324.17,327.5,3.33,parked,parked,parked,0.783,,True,car,4.5,-6.07,left,0.0,0.0,,221.0,1,2892
 2896,2026-02-23T09:07:41,324.58,327.42,2.84,parked,parked,parked,0.504,may not be a vehicle,True,truck,1.5,1.49,right,0.0,0.8,,794.0,1,2896
 2898,2026-02-23T09:07:41,324.67,334.42,9.75,parked,parked,parked,0.832,,True,car,5.4,-6.6,left,0.0,0.0,,195.0,1,2898
-2910,2026-02-23T09:07:42,325.75,330.33,4.58,parked,parked,parked,0.533,,True,bus,1.7,0.67,right,0.0,0.18,57197Y2,745.0,2,2910 2923
+2910,2026-02-23T09:07:42,325.75,330.33,4.58,parked,parked,parked,0.533,,True,truck,1.7,0.67,right,0.0,0.18,57197Y2,745.0,2,2910 2923
 2919,2026-02-23T09:07:43,326.42,326.42,0.0,parked,parked,parked,0.681,,False,truck,10.6,0.22,right,0.0,0.0,,107.0,1,2919
 2921,2026-02-23T09:07:43,326.42,331.17,4.75,parked,parked,parked,0.814,,True,car,5.1,-5.53,left,0.0,0.04,,190.0,1,2921
 2922,2026-02-23T09:07:43,326.58,333.67,7.09,parked,parked,parked,0.782,,True,car,5.2,-7.46,left,0.0,0.0,,202.0,1,2922
@@ -751,7 +751,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 3035,2026-02-23T09:07:51,334.92,348.42,13.5,parked,parked,parked,0.597,,True,car,6.5,-6.72,left,0.0,0.0,,127.0,1,3035
 3037,2026-02-23T09:07:52,335.0,349.58,14.58,parked,parked,parked,0.485,,True,car,4.6,-4.33,left,0.0,0.0,,195.0,1,3037
 3038,2026-02-23T09:07:52,335.08,337.08,2.0,side road / other roadway,cross_side,not_sharing,0.378,model unsure,False,car,31.3,-35.95,left,0.0,0.0,,48.0,1,3038
-3041,2026-02-23T09:07:52,335.5,340.92,5.42,parked,parked,parked,0.559,,True,truck,6.8,-8.06,left,0.0,0.17,,180.0,5,3041 3045 3055 3081 3092
+3041,2026-02-23T09:07:52,335.5,340.92,5.42,parked,parked,parked,0.559,,True,car,6.8,-8.06,left,0.0,0.17,,180.0,5,3041 3045 3055 3081 3092
 3042,2026-02-23T09:07:53,336.0,343.67,7.67,parked,parked,parked,0.547,,True,car,2.0,-1.56,left,0.0,0.0,68PF879,516.0,1,3042
 3049,2026-02-23T09:07:53,336.92,341.42,4.5,parked,parked,parked,0.406,model unsure; may not be a vehicle,False,car,15.9,11.62,right,0.0,0.51,,61.0,1,3049
 3052,2026-02-23T09:07:54,337.25,337.75,0.5,parked,parked,parked,0.369,model unsure,False,car,27.8,-30.81,left,0.0,0.0,,50.0,1,3052
@@ -810,7 +810,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 3326,2026-02-23T09:08:14,357.25,358.5,1.25,parked,parked,parked,0.805,,True,car,3.5,2.97,right,0.0,0.0,,248.0,1,3326
 3328,2026-02-23T09:08:14,357.25,360.0,2.75,parked,parked,parked,0.558,,True,car,12.6,1.73,right,0.0,0.0,,71.0,1,3328
 3330,2026-02-23T09:08:14,357.33,363.83,6.5,parked,parked,parked,0.586,,False,car,15.6,-6.47,left,0.0,0.0,,61.0,1,3330
-3334,2026-02-23T09:08:14,357.83,371.0,13.17,parked,parked,parked,0.819,,True,truck,2.2,1.25,right,0.0,0.22,,459.0,3,3334 3466 3478
+3334,2026-02-23T09:08:14,357.83,371.0,13.17,parked,parked,parked,0.819,,True,car,2.2,1.25,right,0.0,0.22,,459.0,3,3334 3466 3478
 3344,2026-02-23T09:08:16,359.08,368.33,9.25,parked,parked,parked,0.883,,True,car,4.0,3.56,right,0.0,0.01,,214.0,1,3344
 3347,2026-02-23T09:08:16,359.5,365.42,5.92,parked,parked,parked,0.765,,True,car,4.9,-6.51,left,0.0,0.0,,202.0,1,3347
 3349,2026-02-23T09:08:16,359.67,366.92,7.25,parked,parked,parked,0.69,,True,car,4.5,-5.4,left,0.0,0.0,,235.0,2,3349 3449
@@ -883,7 +883,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 3653,2026-02-23T09:08:36,379.08,379.33,0.25,parked,parked,parked,0.488,,False,truck,6.5,1.22,right,0.0,0.0,,157.0,1,3653
 3655,2026-02-23T09:08:36,379.25,379.67,0.42,in my lane,ego_lane,in_my_lane,0.489,,False,car,35.3,0.0,right,0.0,0.0,,30.0,1,3655
 3668,2026-02-23T09:08:36,379.67,382.58,2.91,parked,parked,parked,0.501,,True,car,10.7,11.36,right,0.0,0.01,,99.0,1,3668
-3671,2026-02-23T09:08:37,380.17,396.83,16.66,side road / other roadway,cross_side,not_sharing,0.438,model unsure,True,car,14.5,-1.62,left,0.42,0.07,,74.0,2,3671 3732
+3671,2026-02-23T09:08:37,380.17,396.83,16.66,side road / other roadway,cross_side,not_sharing,0.438,model unsure,True,truck,14.5,-1.62,left,0.42,0.07,,74.0,2,3671 3732
 3679,2026-02-23T09:08:38,381.25,382.0,0.75,parked,parked,parked,0.571,,False,car,12.8,16.28,right,0.0,0.0,,81.0,1,3679
 3680,2026-02-23T09:08:38,381.25,382.08,0.83,side road / other roadway,cross_side,not_sharing,0.393,model unsure,False,car,24.8,-10.71,left,0.0,0.0,,43.0,1,3680
 3689,2026-02-23T09:08:39,382.67,395.67,13.0,side road / other roadway,cross_side,not_sharing,0.418,model unsure,False,car,21.8,-4.99,left,0.38,0.0,,39.0,1,3689
@@ -909,11 +909,11 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 3773,2026-02-23T09:08:55,398.33,398.83,0.5,side road / other roadway,cross_side,not_sharing,0.4,model unsure,False,car,28.1,-18.83,left,1.0,0.0,,29.0,1,3773
 3774,2026-02-23T09:08:55,398.58,401.5,2.92,side road / other roadway,cross_side,not_sharing,0.862,,True,car,2.5,-4.03,left,1.0,0.0,,406.0,1,3774
 3780,2026-02-23T09:08:56,399.67,402.08,2.41,side road / other roadway,cross_side,not_sharing,0.993,,True,car,10.7,0.0,left,1.0,0.01,,96.0,1,3780
-3781,2026-02-23T09:08:56,399.67,426.58,26.91,side road / other roadway,cross_side,not_sharing,0.717,,True,car,11.5,-1.64,left,1.0,0.02,,83.0,5,3781 3783 3802 3808 3837
+3781,2026-02-23T09:08:56,399.67,426.58,26.91,side road / other roadway,cross_side,not_sharing,0.717,,True,truck,11.5,-1.64,left,1.0,0.02,,83.0,5,3781 3783 3802 3808 3837
 3782,2026-02-23T09:08:56,399.75,400.92,1.17,side road / other roadway,cross_side,not_sharing,0.346,model unsure,False,car,23.2,-5.49,left,1.0,0.0,,38.0,1,3782
 3785,2026-02-23T09:08:56,399.92,428.92,29.0,side road / other roadway,cross_side,not_sharing,0.745,,False,car,22.3,-5.68,left,1.0,0.0,,37.0,1,3785
 3787,2026-02-23T09:08:57,400.0,426.58,26.58,side road / other roadway,cross_side,not_sharing,0.775,,False,car,23.5,-6.56,left,1.0,0.0,,37.0,1,3787
-3788,2026-02-23T09:08:57,400.42,429.58,29.16,side road / other roadway,cross_side,not_sharing,0.68,,False,truck,18.8,-10.15,left,1.0,0.0,,49.0,9,3788 3805 3807 3809 3815 3818 3829 3848 3851
+3788,2026-02-23T09:08:57,400.42,429.58,29.16,side road / other roadway,cross_side,not_sharing,0.68,,False,car,18.8,-10.15,left,1.0,0.0,,49.0,9,3788 3805 3807 3809 3815 3818 3829 3848 3851
 3792,2026-02-23T09:08:58,401.08,434.58,33.5,side road / other roadway,cross_side,not_sharing,0.678,,True,car,11.7,0.99,right,0.99,0.01,,76.0,1,3792
 3793,2026-02-23T09:08:58,401.25,432.83,31.58,side road / other roadway,cross_side,not_sharing,0.801,,False,car,26.0,-17.99,left,1.0,0.0,,30.0,1,3793
 3795,2026-02-23T09:08:58,401.5,401.67,0.17,side road / other roadway,cross_side,not_sharing,0.388,model unsure,False,car,5.8,4.78,right,1.0,0.0,,114.0,1,3795
@@ -931,7 +931,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 3843,2026-02-23T09:09:21,424.42,425.67,1.25,side road / other roadway,cross_side,not_sharing,0.955,,True,truck,8.4,-0.65,left,1.0,0.0,,138.0,1,3843
 3847,2026-02-23T09:09:21,424.75,424.75,0.0,parked,parked,parked,0.315,model unsure,False,car,14.1,-1.9,left,1.0,0.0,,71.0,1,3847
 3855,2026-02-23T09:09:23,426.17,431.67,5.5,side road / other roadway,cross_side,not_sharing,0.939,,True,car,2.3,-3.55,left,1.0,0.0,,411.0,1,3855
-3856,2026-02-23T09:09:25,428.17,436.83,8.66,parked,parked,parked,0.479,,True,truck,10.8,6.68,right,0.72,0.0,,94.0,5,3856 3862 3879 3881 3883
+3856,2026-02-23T09:09:25,428.17,436.83,8.66,parked,parked,parked,0.479,,True,car,10.8,6.68,right,0.72,0.0,,94.0,5,3856 3862 3879 3881 3883
 3857,2026-02-23T09:09:25,428.25,431.5,3.25,side road / other roadway,cross_side,not_sharing,0.649,,True,truck,14.3,-1.89,left,1.0,0.02,,71.0,2,3857 3858
 3863,2026-02-23T09:09:26,429.08,435.58,6.5,oncoming,oncoming,sharing_road,0.332,model unsure,True,car,2.0,-2.09,left,0.76,0.0,BPXL343,543.0,1,3863
 3867,2026-02-23T09:09:27,430.42,436.5,6.08,side road / other roadway,cross_side,not_sharing,0.546,,True,car,1.5,0.04,right,0.65,0.0,LX2FTTY,643.0,1,3867
@@ -1020,7 +1020,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 4206,2026-02-23T09:10:09,472.25,476.17,3.92,parked,parked,parked,0.87,,True,car,1.8,1.74,right,0.0,0.0,9MJF440,564.0,1,4206
 4210,2026-02-23T09:10:09,472.58,472.67,0.09,parked,parked,parked,0.615,,False,car,20.6,0.34,right,0.0,0.0,,44.0,1,4210
 4212,2026-02-23T09:10:09,472.67,480.17,7.5,parked,parked,parked,0.82,,True,car,1.5,1.07,right,0.0,0.21,9SVZ584,642.0,1,4212
-4216,2026-02-23T09:10:09,472.83,487.25,14.42,"other lane, same way",adjacent_same,sharing_road,0.861,,True,car,1.7,-1.15,left,0.0,0.0,66058F2,671.0,2,4216 4360
+4216,2026-02-23T09:10:09,472.83,487.25,14.42,"other lane, same way",adjacent_same,sharing_road,0.861,,True,truck,1.7,-1.15,left,0.0,0.0,66058F2,671.0,2,4216 4360
 4221,2026-02-23T09:10:09,472.92,473.58,0.66,side road / other roadway,cross_side,not_sharing,0.367,model unsure,False,car,52.7,-1.33,left,0.0,0.0,,19.0,1,4221
 4225,2026-02-23T09:10:10,473.17,475.0,1.83,parked,parked,parked,0.368,model unsure,False,car,15.9,-7.33,left,0.0,0.0,,77.0,1,4225
 4227,2026-02-23T09:10:10,473.33,475.0,1.67,parked,parked,parked,0.82,,True,car,1.6,0.76,right,0.0,0.03,,606.0,1,4227
@@ -1076,7 +1076,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 4424,2026-02-23T09:10:26,489.5,491.58,2.08,parked,parked,parked,0.333,model unsure,False,car,27.9,-1.36,left,0.0,0.0,,43.0,1,4424
 4429,2026-02-23T09:10:26,489.75,490.0,0.25,parked,parked,parked,0.38,model unsure,False,car,24.0,-16.2,left,0.0,0.09,,53.0,1,4429
 4430,2026-02-23T09:10:26,489.75,490.58,0.83,parked,parked,parked,0.369,model unsure,False,car,46.9,-0.74,left,0.0,0.0,,22.0,1,4430
-4433,2026-02-23T09:10:26,489.92,490.25,0.33,parked,parked,parked,0.394,model unsure,False,car,15.1,-12.81,left,0.0,0.0,,89.0,2,4433 4440
+4433,2026-02-23T09:10:26,489.92,490.25,0.33,parked,parked,parked,0.394,model unsure,False,truck,15.1,-12.81,left,0.0,0.0,,89.0,2,4433 4440
 4441,2026-02-23T09:10:27,490.25,490.5,0.25,parked,parked,parked,0.37,model unsure,False,car,28.0,24.75,right,0.0,0.0,,37.0,1,4441
 4445,2026-02-23T09:10:27,490.42,494.58,4.16,"other lane, same way",adjacent_same,sharing_road,0.304,model unsure,False,car,16.7,-9.98,left,0.0,0.01,,57.0,1,4445
 4447,2026-02-23T09:10:27,490.42,494.5,4.08,parked,parked,parked,0.362,model unsure,False,car,15.8,-12.07,left,0.0,0.0,,33.0,1,4447
@@ -1332,7 +1332,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 5434,2026-02-23T09:11:35,558.25,563.42,5.17,side road / other roadway,cross_side,not_sharing,0.478,,False,car,47.7,-4.63,left,1.0,0.0,,22.0,1,5434
 5440,2026-02-23T09:11:37,560.83,560.83,0.0,side road / other roadway,cross_side,not_sharing,0.295,model unsure,False,car,38.9,-19.21,left,1.0,0.0,,24.0,1,5440
 5443,2026-02-23T09:11:38,561.58,563.08,1.5,side road / other roadway,cross_side,not_sharing,0.894,,False,car,33.4,-19.93,left,1.0,0.0,,27.0,1,5443
-5447,2026-02-23T09:11:39,562.25,563.67,1.42,side road / other roadway,cross_side,not_sharing,0.747,may not be a vehicle,True,car,15.0,-21.51,left,1.0,0.66,,61.0,1,5447
+5447,2026-02-23T09:11:39,562.25,563.67,1.42,side road / other roadway,cross_side,not_sharing,0.747,may not be a vehicle,False,car,15.0,-21.51,left,1.0,0.66,,61.0,1,5447
 5451,2026-02-23T09:11:39,562.83,571.92,9.09,side road / other roadway,cross_side,not_sharing,0.838,,False,car,29.6,0.0,right,1.0,0.0,,33.0,1,5451
 5454,2026-02-23T09:11:40,563.25,574.42,11.17,side road / other roadway,cross_side,not_sharing,0.979,,True,car,6.4,6.38,right,1.0,0.0,,163.0,1,5454
 5455,2026-02-23T09:11:40,563.25,585.25,22.0,side road / other roadway,cross_side,not_sharing,0.868,,True,car,9.6,10.37,right,1.0,0.02,,108.0,1,5455
@@ -1459,7 +1459,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 5958,2026-02-23T09:12:41,624.67,625.67,1.0,"other lane, same way",adjacent_same,sharing_road,0.437,model unsure,False,car,27.4,-12.86,left,0.0,0.0,,40.0,1,5958
 5961,2026-02-23T09:12:42,625.0,626.17,1.17,"other lane, same way",adjacent_same,sharing_road,0.321,model unsure,True,car,4.2,-5.03,left,0.0,0.0,,250.0,1,5961
 5964,2026-02-23T09:12:42,625.67,626.58,0.91,"other lane, same way",adjacent_same,sharing_road,0.427,model unsure,False,car,26.5,-12.64,left,0.0,0.0,,41.0,1,5964
-5966,2026-02-23T09:12:43,626.17,632.0,5.83,"other lane, same way",adjacent_same,sharing_road,0.735,,True,car,1.4,-0.83,left,0.0,0.0,46768B3,806.0,4,5966 5978 5979 6002
+5966,2026-02-23T09:12:43,626.17,632.0,5.83,"other lane, same way",adjacent_same,sharing_road,0.735,,True,truck,1.4,-0.83,left,0.0,0.0,46768B3,806.0,4,5966 5978 5979 6002
 5972,2026-02-23T09:12:43,626.58,627.42,0.84,"other lane, same way",adjacent_same,sharing_road,0.543,,False,car,29.4,-14.52,left,0.0,0.0,,38.0,1,5972
 5987,2026-02-23T09:12:45,628.5,628.75,0.25,parked,parked,parked,0.306,model unsure,False,car,38.8,-8.83,left,0.0,0.0,,22.0,1,5987
 5988,2026-02-23T09:12:45,628.58,632.67,4.09,parked,parked,parked,0.391,model unsure,True,car,10.9,-6.78,left,0.0,0.01,,90.0,1,5988
@@ -1604,7 +1604,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 6476,2026-02-23T09:13:25,668.33,678.58,10.25,parked,parked,parked,0.707,,True,car,1.6,0.5,right,0.0,0.0,9NGU864,573.0,1,6476
 6477,2026-02-23T09:13:25,668.33,669.83,1.5,parked,parked,parked,0.274,model unsure,False,car,33.3,-5.61,left,0.0,0.0,,30.0,1,6477
 6479,2026-02-23T09:13:25,668.42,677.58,9.16,parked,parked,parked,0.5,,True,car,7.8,-8.08,left,0.0,0.07,,180.0,3,6479 6527 6557
-6483,2026-02-23T09:13:25,668.75,669.25,0.5,oncoming,oncoming,sharing_road,0.555,,False,car,7.3,-10.52,left,0.0,0.0,,178.0,2,6483 6487
+6483,2026-02-23T09:13:25,668.75,669.25,0.5,oncoming,oncoming,sharing_road,0.555,,False,truck,7.3,-10.52,left,0.0,0.0,,178.0,2,6483 6487
 6489,2026-02-23T09:13:26,669.33,673.75,4.42,parked,parked,parked,0.791,,True,car,1.5,0.78,right,0.0,0.01,,679.0,2,6489 6502
 6491,2026-02-23T09:13:26,669.5,669.83,0.33,parked,parked,parked,0.27,model unsure,False,car,39.1,-16.45,left,0.0,0.0,,32.0,1,6491
 6494,2026-02-23T09:13:27,670.08,670.17,0.09,parked,parked,parked,0.404,model unsure,False,car,36.1,-14.54,left,0.0,0.0,,34.0,1,6494
@@ -1649,7 +1649,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 6627,2026-02-23T09:13:37,680.75,681.75,1.0,"other lane, same way",adjacent_same,sharing_road,0.765,,False,car,25.3,-23.7,left,0.0,0.0,,37.0,1,6627
 6628,2026-02-23T09:13:37,680.75,682.08,1.33,parked,parked,parked,0.565,,True,car,11.7,-1.02,left,0.0,0.04,,92.0,1,6628
 6629,2026-02-23T09:13:37,680.83,682.75,1.92,parked,parked,parked,0.348,model unsure,False,car,21.7,-18.38,left,0.0,0.0,,49.0,1,6629
-6631,2026-02-23T09:13:37,680.83,690.67,9.84,parked,parked,parked,0.438,model unsure,True,truck,15.0,-0.55,left,0.0,0.01,,91.0,2,6631 6788
+6631,2026-02-23T09:13:37,680.83,690.67,9.84,parked,parked,parked,0.438,model unsure,False,truck,15.0,-0.55,left,0.0,0.01,,91.0,2,6631 6788
 6636,2026-02-23T09:13:38,681.5,688.08,6.58,parked,parked,parked,0.802,,True,car,1.3,0.49,right,0.0,0.0,CFU8956,801.0,1,6636
 6637,2026-02-23T09:13:38,681.5,685.5,4.0,parked,parked,parked,0.728,,True,car,1.3,0.37,right,0.0,0.03,,874.0,2,6637 6682
 6639,2026-02-23T09:13:38,681.75,682.17,0.42,"other lane, same way",adjacent_same,sharing_road,0.261,model unsure,False,car,40.1,-22.05,left,0.0,0.0,,28.0,1,6639
@@ -2075,7 +2075,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 8302,2026-02-23T09:16:08,831.75,835.58,3.83,side road / other roadway,cross_side,not_sharing,0.63,,False,car,21.6,-28.58,left,0.56,0.0,,58.0,1,8302
 8305,2026-02-23T09:16:09,832.83,833.08,0.25,in my lane,ego_lane,in_my_lane,0.338,model unsure,False,car,34.7,9.81,right,0.0,0.0,,30.0,1,8305
 8308,2026-02-23T09:16:12,835.58,839.17,3.59,side road / other roadway,cross_side,not_sharing,0.938,,False,car,16.6,-4.13,left,1.0,0.0,,77.0,1,8308
-8317,2026-02-23T09:16:13,836.5,840.42,3.92,side road / other roadway,cross_side,not_sharing,0.923,,True,car,12.5,-3.13,left,1.0,0.0,,113.0,2,8317 8320
+8317,2026-02-23T09:16:13,836.5,840.42,3.92,side road / other roadway,cross_side,not_sharing,0.923,,True,truck,12.5,-3.13,left,1.0,0.0,,113.0,2,8317 8320
 8323,2026-02-23T09:16:14,837.67,841.08,3.41,side road / other roadway,cross_side,not_sharing,0.969,,True,bus,6.3,0.0,left,1.0,0.0,,242.0,1,8323
 8328,2026-02-23T09:16:16,839.75,842.75,3.0,side road / other roadway,cross_side,not_sharing,0.98,,True,car,10.7,12.44,right,1.0,0.01,,131.0,1,8328
 8332,2026-02-23T09:16:19,842.83,847.75,4.92,side road / other roadway,cross_side,not_sharing,0.966,,True,truck,11.4,-7.29,left,1.0,0.15,,130.0,1,8332
@@ -2111,7 +2111,7 @@ vehicle_id,time_local,t_start,t_end,duration_s,relation_text,relation,group,conf
 8532,2026-02-23T09:17:43,926.42,926.83,0.41,parked,parked,parked,0.509,,False,bus,7.9,-9.36,left,0.0,0.0,,156.0,1,8532
 8541,2026-02-23T09:17:44,927.17,929.08,1.91,parked,parked,parked,0.307,model unsure,False,car,52.5,-7.13,left,0.0,0.0,,21.0,1,8541
 8550,2026-02-23T09:17:45,928.33,932.08,3.75,parked,parked,parked,0.477,,False,car,54.5,0.19,right,0.0,0.0,,25.0,1,8550
-8554,2026-02-23T09:17:51,934.42,939.0,4.58,parked,parked,parked,0.563,may not be a vehicle,True,car,1.6,-0.66,left,0.0,0.73,,566.0,2,8554 8558
+8554,2026-02-23T09:17:51,934.42,939.0,4.58,parked,parked,parked,0.563,may not be a vehicle,True,truck,1.6,-0.66,left,0.0,0.73,,566.0,2,8554 8558
 8556,2026-02-23T09:17:52,935.92,936.75,0.83,oncoming,oncoming,sharing_road,0.337,model unsure,False,car,27.5,-11.1,left,0.0,0.0,,38.0,1,8556
 8559,2026-02-23T09:17:54,937.0,939.0,2.0,side road / other roadway,cross_side,not_sharing,0.346,model unsure,False,car,32.7,-15.36,left,0.0,0.0,,40.0,1,8559
 8569,2026-02-23T09:17:56,939.33,943.08,3.75,parked,parked,parked,0.419,model unsure,True,car,9.7,-12.01,left,0.0,0.0,,115.0,3,8569 8586 8590

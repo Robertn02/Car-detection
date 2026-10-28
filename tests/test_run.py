@@ -49,3 +49,27 @@ def test_video_out_writes_h264(tmp_path):
     ok, frame = cap.read()
     assert ok and frame.shape == (48, 64, 3)
     cap.release()
+
+
+def test_a_reader_that_fails_ends_its_queue_with_the_error(monkeypatch):
+    import queue
+    from pathlib import Path
+
+    import bikesafe.perceive as perceive
+
+    def broken(path):
+        raise OSError("disk unplugged")
+
+    monkeypatch.setattr(perceive, "open_video", broken)
+    out: queue.Queue = queue.Queue()
+    perceive.frame_reader(Path("ride.mp4"), 2, 0, 10, out)
+    first, second = out.get(timeout=5), out.get(timeout=5)
+    assert isinstance(first, OSError) and second is None  # the main loop raises it instead of waiting forever
+
+
+def test_a_clip_cut_from_a_ride_starts_at_its_offset(tmp_path):
+    from bikesafe.common import VideoInfo
+
+    whole = VideoInfo(tmp_path / "VID_20260224_162848_00_006.mp4", 24.0, 100, 1920, 1080)
+    cut = VideoInfo(tmp_path / "VID_20260224_162848_00_006_from300s_3min.mp4", 24.0, 100, 1920, 1080)
+    assert whole.start_local == "2026-02-24T16:28:48" and cut.start_local == "2026-02-24T16:33:48"

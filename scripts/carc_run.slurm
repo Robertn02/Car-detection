@@ -31,4 +31,5 @@ nvidia-smi --query-gpu=name,memory.total --format=csv
 
 python -m bikesafe.run "${VIDEOS:-videos}" --out-root work --render-minutes 1 \
     --jobs $(( ${SLURM_CPUS_PER_TASK:-8} / 2 ))
-python scripts/build_upgrade_report.py
+# The tables are in results/corpus and the evaluation in results/typology. The September 2026 upgrade report
+# (scripts/build_upgrade_report.py) describes the pipeline of that milestone and is not rebuilt here.

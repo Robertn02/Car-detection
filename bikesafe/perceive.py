@@ -39,28 +39,36 @@ MAX_CROPS_PER_SECOND = 6
 
 
 def frame_reader(path: Path, stride: int, start: int, end: int, out: queue.Queue) -> None:
-    """Decode, downscale, and compute dense flow off the main thread (OpenCV releases the GIL)."""
-    cap = open_video(path)
-    if start:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-    dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
-    prev_small = None
-    idx = start
-    while idx < end:
-        if (idx - start) % stride == 0:
-            ok, frame = cap.read()
-            if not ok:
+    """Decode, downscale, and compute dense flow off the main thread (OpenCV releases the GIL). Ends the queue with
+    None; an error is put on the queue first, for the main thread to raise instead of waiting for frames forever."""
+    cap = None
+    try:
+        cap = open_video(path)
+        if start:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+        prev_small = None
+        idx = start
+        while idx < end:
+            if (idx - start) % stride == 0:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                small = cv2.cvtColor(cv2.resize(frame, (FLOW_W, FLOW_H), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+                # Flow on the current grid pointing back to the previous frame, negated: motion prev->current at
+                # current pixels.
+                flow = None if prev_small is None else -dis.calc(small, prev_small, None)
+                prev_small = small
+                out.put((idx, frame, flow, flow_affine(flow, frame.shape[1], frame.shape[0])))
+            elif not cap.grab():
                 break
-            small = cv2.cvtColor(cv2.resize(frame, (FLOW_W, FLOW_H), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-            # Flow on the current grid pointing back to the previous frame, negated: motion prev->current at current pixels.
-            flow = None if prev_small is None else -dis.calc(small, prev_small, None)
-            prev_small = small
-            out.put((idx, frame, flow, flow_affine(flow, frame.shape[1], frame.shape[0])))
-        elif not cap.grab():
-            break
-        idx += 1
-    cap.release()
-    out.put(None)
+            idx += 1
+    except Exception as error:
+        out.put(error)
+    finally:
+        if cap is not None:
+            cap.release()
+        out.put(None)
 
 
 def flow_affine(flow: np.ndarray | None, width: int, height: int) -> np.ndarray:
@@ -196,6 +204,8 @@ def process_video(path: Path, args: argparse.Namespace, clip: ClipEncoder | None
     last_report = started
 
     while (item := frames_q.get()) is not None:
+        if isinstance(item, Exception):
+            raise RuntimeError(f"reading {path} failed") from item
         idx, frame, flow, warp_state["warp"] = item
         t = idx / info.fps
         result = model.track(
@@ -284,6 +294,12 @@ def process_video(path: Path, args: argparse.Namespace, clip: ClipEncoder | None
             crop=np.stack(crop_embs) if crop_embs else np.zeros((0, 512)),
         )
     elapsed = time.perf_counter() - started
+    # a video that ends before its stated length (a cut-off upload) is not marked complete, so a re-run retries it
+    expected = len(range(start, end, stride))
+    truncated = len(frame_idx) < expected - 1
+    if truncated:
+        print(f"{info.stem}: the video ended after {len(frame_idx)} of {expected} frames - not marked complete",
+              flush=True)
     write_json(meta_path, {
         "video": str(path), "stem": info.stem, "start_local": info.start_local,
         "source_fps": info.fps, "source_frames": info.frames, "width": info.width, "height": info.height,
@@ -296,7 +312,7 @@ def process_video(path: Path, args: argparse.Namespace, clip: ClipEncoder | None
         "gmc": "dense-flow RANSAC similarity" if args.gmc == "dense" else "BoT-SORT sparseOptFlow",
         "precision": "fp16" if precision else "fp32",
         "elapsed_s": round(elapsed, 1), "processed_fps_achieved": round(len(frame_idx) / max(elapsed, 1e-6), 2),
-        "complete": args.start_s == 0 and args.end_s is None,
+        "complete": args.start_s == 0 and args.end_s is None and not truncated, "truncated": truncated,
     })
     print(f"{info.stem}: {len(frame_idx)} frames, {len(dets)} detections in {elapsed/60:.1f} min", flush=True)
 

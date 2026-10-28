@@ -95,7 +95,9 @@ STREET_SUFFIX = (r"\b(ST|AVE?|BLVD|BLVO|BL|DR|RD|PL|WAY|PKWY|PARKWAY|CT|LN|TER|C
 DIRECTION = r"\b\d{1,3}\s?(NORTH|SOUTH|EAST|WEST)\b|^(NORTH|SOUTH|EAST|WEST)$"  # "10 EAST": a route marker
 TEXT_RULES: list[tuple[str, str]] = [
     (r"BUS STOP|\bMETRO\b", "bus_stop"),
-    (r"\bSTOP\b", "stop"),
+    (r"STOP AHEAD|SIGNAL AHEAD|SPEED (HUMP|BUMP)", "warning"),
+    # the word on a stop sign - not "NO STOP", "STOP HERE ON RED" or "STOP FOR PEDESTRIANS"
+    (r"(?<!NO )\bSTOP\b(?!\s*(HERE|FOR|LINE))", "stop"),
     (r"\bYIELD\b", "yield"),
     (r"SPEED|LIMIT|\bSPE[A-Z]*\s+LIM", "speed_limit"),  # "END SCHOO ZONE SPE LIMI"
     (r"DO NOT ENTER|WRONG WAY", "do_not_enter"),
@@ -187,7 +189,8 @@ def decide(probs: np.ndarray, text: str, stop_confirmed: bool, height: float = f
     "other_sign". Stop and yield are never decided by CLIP alone (TEXT_ONLY)."""
     names = list(SIGN_TYPES)
     by_text = text_category(text) if text else None
-    if stop_confirmed or by_text == "stop":
+    # what a sign says beats its red-octagon look ("DO NOT ENTER"), but not a street-name fragment ("ST AL")
+    if by_text == "stop" or (stop_confirmed and by_text in (None, "street_name", "guide")):
         return "stop", 1.0
     if by_text is not None:
         return by_text, 1.0
@@ -458,3 +461,95 @@ def read_signs(objects, crops: dict[int, np.ndarray], device: str = "cpu", fp16:
         out[oid] = {"category": category, "sign_text": text, "type_conf": round(conf, 3),
                     "speed_limit": speed_limit(text) if category == "speed_limit" else None}
     return out
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# street names: completing partial reads from the names read in full elsewhere in the corpus
+
+STREET_SUFFIX = {"bi": "Bl", "b1": "Bl", "8l": "Bl", "bl": "Bl", "blvd": "Bl", "blvo": "Bl", "av": "Av", "ave": "Av",
+                 "st": "St", "si": "St", "sl": "St", "pl": "Pl", "dr": "Dr", "rd": "Rd", "fwy": "Fwy"}
+MIN_NAME_SIGNS = 3  # signs a name must be read on to complete partial reads of others
+MIN_PART_CHARS = 4  # a shorter read is not completed (too many names contain "St" or "La")
+NAME_MATCH = 0.8  # similarity (difflib ratio) at which a one-word misread ("Hower") is taken for a known name
+DIRECTIONS = {"north", "south", "east", "west"}  # read on their own on freeway signs; never completed
+NAMED_SIGNS = ("street_name", "guide")  # sign types whose text is a place name
+
+
+def tidy_street_name(text: str) -> str:
+    """Spaces normalised and the usual misreads of the suffix put right: "Jefferson BI" -> "Jefferson Bl"."""
+    words = str(text).split()
+    return " ".join(STREET_SUFFIX.get(w.lower(), w) if i else w for i, w in enumerate(words))
+
+
+def street_words(name: str) -> list[str]:
+    """The words of the name without its suffix, block number and direction letters, lower case:
+    "Hoover 600" -> ["hoover"]."""
+    words = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in tidy_street_name(name).split()
+             if w not in STREET_SUFFIX.values()]
+    return [w for w in words if len(w) > 1 and not w.isdigit()]
+
+
+def street_base(name: str) -> str:
+    return "".join(street_words(name))
+
+
+def has_suffix(name: str) -> bool:
+    """Whether the name ends in a street type ("Holly Av"): read whole, not a fragment of a longer name."""
+    words = tidy_street_name(name).split()
+    return len(words) > 1 and words[-1] in STREET_SUFFIX.values()
+
+
+def corpus_street_names(analysis_root: Path) -> "StreetNames":
+    """StreetNames from the street-name and guide signs of every ride under analysis_root (one read per sign)."""
+    import pandas as pd
+
+    reads: list[str] = []
+    for path in sorted(analysis_root.glob("*/infrastructure.parquet")):
+        objects = pd.read_parquet(path, columns=["kind", "category", "sign_text", "object_id"])
+        named = objects[(objects.kind == "sign") & objects.category.isin(NAMED_SIGNS)].drop_duplicates("object_id")
+        reads += named.sign_text.dropna().astype(str).tolist()
+    return StreetNames(reads)
+
+
+class StreetNames:
+    """Names read in full on at least MIN_NAME_SIGNS signs of the corpus, and partial or misread names completed
+    from them: "estmoreland" and "tmor" -> "Westmoreland", "HOOVE" and "Hoovel St" -> "Hoover St".
+
+    A read that already holds a known name ("Westmoreland 800 S") is only tidied. Otherwise it is completed when it
+    is part of known names - or, as one word, close to one - that are all the same street (one base name, or names
+    that contain it as a word); a read that fits two streets, or none, is left as it was read. A frequent fragment
+    ("estmoreland", read on 10 signs) is not a name: a name without a street type that sits inside another, more
+    often read name other than as a whole word is dropped."""
+
+    def __init__(self, reads: list[str]) -> None:
+        counts: dict[str, int] = {}
+        for read in reads:
+            name = tidy_street_name(read)
+            base = street_base(name)
+            if len(re.sub(r"[^a-z]", "", base)) >= MIN_PART_CHARS and base not in DIRECTIONS:
+                counts[name] = counts.get(name, 0) + 1
+        names = {name: n for name, n in counts.items() if n >= MIN_NAME_SIGNS}
+        self.names = {a: n for a, n in names.items()
+                      if has_suffix(a) or not any(b != a and names[b] >= n and street_base(a) in street_base(b)
+                                 and street_base(a) != street_base(b) and street_base(a) not in street_words(b)
+                                 for b in names)}
+        self.bases = {street_base(name) for name in self.names}
+
+    def __call__(self, read: str) -> str:
+        import difflib
+
+        name = tidy_street_name(read)
+        words = street_words(name)
+        key = "".join(words)
+        if (key in self.bases or key in DIRECTIONS or any(w in DIRECTIONS for w in words[:1]) and len(words) == 1
+                or len(re.sub(r"[^a-z]", "", key)) < MIN_PART_CHARS):
+            return name
+        fits = [(n, known) for known, n in self.names.items()
+                if key in street_base(known) or len(words) == 1
+                and difflib.SequenceMatcher(None, key, street_base(known)).ratio() >= NAME_MATCH]
+        if not fits:
+            return name
+        shortest = min((street_base(known) for _, known in fits), key=len)
+        if not all(street_base(known) == shortest or shortest in street_words(known) for _, known in fits):
+            return name  # could be either of two streets
+        return max((n, -len(known), known) for n, known in fits if street_base(known) == shortest)[2]
