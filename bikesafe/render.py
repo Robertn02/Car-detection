@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -53,7 +54,7 @@ SIGN_NAMES = {"parking": "parking", "no_turn": "no turn", "one_way": "one way", 
               "guide": "guide", "street_name": "street", "other_sign": "sign", "yield": "YIELD", "stop": "STOP",
               "roadwork": "road work", "bus_stop": "bus stop"}
 LANE_COLOURS_BGR = {"bike": (80, 230, 80), "solid": (255, 255, 255), "broken": (180, 180, 180), "yellow": (0, 220, 255)}
-LABEL_MAX_Z = 25.0  # m; farther vehicles get a thin box and no label (relations are validated within 15 m)
+LABEL_MAX_Z = 40.0  # m; farther vehicles get a thin box and no label (relations are validated within 25 m)
 UNSURE_CONFIDENCE = 0.45  # a relation the model gives less than this probability is labelled with a "?"
 MAX_BOX_GAP = 2  # processed frames (1/6 s at 12 fps) a track's box is carried across when the detector misses it
 SAMPLE_HOLD_S = 0.3  # draw an object or line on frames up to this far from the last sample that saw it
@@ -70,11 +71,17 @@ SNAP_SEARCH_M = 0.3  # paint is looked for this far either side of the predicted
 SNAP_ROWS = 28  # image rows looked at along a line
 SNAP_MIN_POINTS = 5  # rows that must find paint for the frame to place the line
 SNAP_MIN_CONTRAST, SNAP_CONTRAST_SHARE = 8.0, 0.15  # paint stands this far above the asphalt (grey levels, share)
-SNAP_GAIN = 0.5  # weight of a frame's measurement against the line's running estimate
-SUPPORT_DECAY = 0.85  # per frame; a line is shown while its share of frames with paint found stays above SHOW_SUPPORT
-SHOW_SUPPORT = 0.4
-KEEP_S = 0.8  # a line followed on its paint stays this long after the samples stop reporting it
-FADE_S = 0.25  # lines fade in and out over this long
+SNAP_GAIN, LOCK_GAIN, LOCK_FRAMES = 0.35, 0.7, 3  # weight of the paint's fit against the line's running estimate
+PREDICTION_PULL = 0.05  # per frame without paint found, towards the samples' prediction
+HISTORY_FRAMES, HISTORY_WEIGHT = 6, 0.75  # the paint of this many recent frames is fitted, older frames weighing less
+MATCH_M = 0.4  # a line the samples report within this of a followed line (m, across the road) is that line
+DUPLICATE_LINE_M = 0.25  # two followed lines this close are one
+SUPPORT_DECAY = 0.85  # per frame: a line's support is the recent share of frames with paint found under it
+SHOW_SUPPORT, HIDE_SUPPORT = 0.45, 0.12  # a line appears above the first and goes below the second
+KEEP_S, KEEP_MAX_S = 1.5, 4.0  # after the samples stop reporting a line, it stays this long - up to the second while
+# its paint is still found under it
+FADE_S = 0.3  # lines fade in and out over this long
+EXTENT_GAIN = 0.15  # per frame: how fast a line's far end follows the samples (their extent jumps sample to sample)
 
 
 def draw_legend(frame: np.ndarray, lanes: bool = True) -> None:
@@ -258,16 +265,15 @@ def draw_lane_lines(image: np.ndarray, lines: list[dict], u_foe: float, calib: d
     np.copyto(image, layer, where=(drawn > 0)[..., None])
 
 
-def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
-               lateral_h: float, boxes: np.ndarray, contrast: float) -> tuple[float, float, float] | None:
-    """The image line u = a + b*d (d: rows below the horizon) moved onto the paint near it in this frame.
-
-    Along the predicted line, each sampled row is searched SNAP_SEARCH_M either side for a stripe brighter than the
-    asphalt beside it by `contrast`, about as wide as lane paint at that distance (a kerb, a white car or a sunlit
-    patch is wider). A straight line through the stripes found, robust to strays, is the line in this frame; it is
-    returned as (a, b, lowest row found below the horizon), or None when too few rows found paint."""
+def find_stripes(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
+                 lateral_h: float, boxes: np.ndarray, contrast: float,
+                 looked: list[int] | None = None) -> list[tuple[float, float, float]]:
+    """Paint along the image line u = a + b*d (d: rows below the horizon) in this frame: (d, u, contrast) of every
+    sampled row where a stripe brighter than the asphalt beside it by `contrast` lies within SNAP_SEARCH_M of the
+    line, about as wide as lane paint at that distance (a kerb, a white car or a sunlit patch is wider). `looked`, if
+    given, gets the number of rows that could be looked at (in the picture and not behind a vehicle)."""
     height, width = bright.shape
-    found = []
+    found, visible = [], 0
     for d in np.linspace(d_range[0], d_range[1], SNAP_ROWS):
         v = int(round(horizon + d))
         if v < 1 or v >= height - 1:
@@ -286,6 +292,7 @@ def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, flo
         inside = np.flatnonzero(np.abs(np.arange(lo, hi) - u) <= reach)
         if not len(inside):
             continue
+        visible += 1
         i = int(inside[np.argmax(profile[inside])])
         rise = profile[i] - background
         if rise < contrast:
@@ -298,31 +305,52 @@ def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, flo
             right += 1
         if not 0.3 * paint_px <= right - left + 1 <= 3 * paint_px + 3:
             continue
-        found.append((d, lo + (left + right) / 2, rise))
-    if len(found) < SNAP_MIN_POINTS:
+        found.append((float(d), lo + (left + right) / 2, float(rise)))
+    if looked is not None:
+        looked.append(visible)
+    return found
+
+
+def fit_stripes(points: list[tuple[float, float, float]], span: float, lateral_h: float) -> tuple[float, float, float] | None:
+    """A straight image line through stripes (d, u, weight), robust to strays: (a, b, lowest row it covers), or None
+    when fewer than SNAP_MIN_POINTS rows agree or they cover less than a quarter of `span` rows."""
+    if len(points) < SNAP_MIN_POINTS:
         return None
-    ds, us, weights = (np.array(c, float) for c in zip(*found))
+    ds, us, weights = (np.array(c, float) for c in zip(*points))
     keep = np.ones(len(ds), bool)
     fit_a = fit_b = 0.0
     for _ in range(2):  # fit, drop the rows far off the fit, fit again
+        if keep.sum() < SNAP_MIN_POINTS or np.ptp(ds[keep]) < 0.25 * span:
+            return None  # too few rows agree, or all in one short stretch: not enough to set the line's slant
         fit_b, fit_a = np.polyfit(ds[keep], us[keep], 1, w=weights[keep])
         keep = np.abs(us - (fit_a + fit_b * ds)) <= 0.08 * ds / lateral_h + 3
-        if keep.sum() < SNAP_MIN_POINTS:
-            return None
-    if np.ptp(ds[keep]) < 0.25 * (d_range[1] - d_range[0]):
-        return None  # all in one short stretch: not enough to set the line's slant
+    if keep.sum() < SNAP_MIN_POINTS or np.ptp(ds[keep]) < 0.25 * span:
+        return None
     return float(fit_a), float(fit_b), float(ds[keep].max())
+
+
+def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
+               lateral_h: float, boxes: np.ndarray, contrast: float) -> tuple[float, float, float] | None:
+    """The image line u = a + b*d moved onto the paint near it in this frame alone: (a, b, lowest row), or None."""
+    stripes = find_stripes(bright, a, b, d_range, horizon, lateral_h, boxes, contrast)
+    return fit_stripes([(d, u, w) for d, u, w in stripes], d_range[1] - d_range[0], lateral_h)
 
 
 class LaneOverlay:
     """The lane lines of each frame of a clip, predicted from the samples around it (lines_near) and laid on the
-    paint of the frame (find_paint).
+    paint of the frame (find_stripes).
 
     Each line is followed as an image line u = a + b*d (d = rows below the horizon), which is what a straight line on
-    a flat road looks like. Its estimate starts from the samples' prediction, is moved part of the way to where this
-    frame shows its paint, and is pulled back gently towards the prediction, so it neither jitters with the frame nor
-    wanders off with it. A line is shown while paint is found under it in most recent frames, kept for KEEP_S after
-    the samples stop reporting it as long as its paint is still there, and faded in and out."""
+    a flat road looks like, and keeps one identity for as long as it is seen: a line the samples report is matched
+    to a followed line by where it is in the picture (within MATCH_M), not by the samples' own numbering, which
+    restarts whenever one sample misses it. Its paint is looked for along it in every frame and the stripes of the
+    last HISTORY_FRAMES frames are fitted together - the line stays put in the picture as the rider moves along it,
+    while the dashes of a broken line slide along it, so a few frames together cover it where one frame finds only a
+    dash or two. The fit moves the line part of the way (SNAP_GAIN; quicker while it first appears); only when no paint
+    is found is it pulled, gently, towards the samples' prediction. A line appears once paint is found under it in
+    most recent frames (SHOW_SUPPORT) and goes only when that falls well below (HIDE_SUPPORT), at a junction, or
+    KEEP_S after the samples stop reporting it, fading in and out; two lines that settle on one paint stripe are
+    merged."""
 
     def __init__(self, lanes: pd.DataFrame, calib: dict, fps: float) -> None:
         self.lanes, self.calib, self.fps = lanes, calib, fps
@@ -331,10 +359,21 @@ class LaneOverlay:
         self.lateral_h = calib["lateral_height_m"]
         self.horizon = calib["horizon_v"]
         self.state: dict[int, dict] = {}
+        self.next_id = 0
 
     def image_line(self, x: float, shear: float, u_foe: float) -> tuple[float, float]:
         """(a, b) of the metric line X(Z) = x + shear*(Z - REF_Z) seen from the heading u_foe (as project_line)."""
         return u_foe + shear * self.fh / self.lateral_h, (x - shear * REF_Z) / self.lateral_h
+
+    def apart_m(self, ab1: np.ndarray, ab2: np.ndarray, d: float) -> float:
+        """How far apart two image lines are on the road at row d below the horizon (m)."""
+        return abs((ab1[0] + ab1[1] * d) - (ab2[0] + ab2[1] * d)) * self.lateral_h / max(d, 1.0)
+
+    def follow(self, prediction: np.ndarray, d_mid: float, taken: set[int]) -> int | None:
+        """The followed line a line the samples report is, if one lies within MATCH_M of it."""
+        near = [(self.apart_m(st["ab"], prediction, d_mid), key) for key, st in self.state.items() if key not in taken]
+        near = [(apart, key) for apart, key in near if apart < MATCH_M]
+        return min(near)[1] if near else None
 
     def update(self, image: np.ndarray, frame: int, boxes: np.ndarray) -> list[dict]:
         """Lines to draw on this frame, each with its image line, rows and opacity."""
@@ -343,45 +382,61 @@ class LaneOverlay:
         road = bright[int(self.horizon) + 20:]
         contrast = max(SNAP_MIN_CONTRAST, SNAP_CONTRAST_SHARE * float(np.median(road))) if road.size else SNAP_MIN_CONTRAST
         bottom = image.shape[0] - self.horizon - 2
-        seen = set()
+        taken: set[int] = set()
         for line in lines:
             assert u_foe is not None
-            lid = line["line_id"]
-            seen.add(lid)
             prediction = np.array(self.image_line(line["x"], line["shear"], u_foe))
-            st = self.state.get(lid)
-            if st is None or frame - st["frame"] > 2:
-                st = self.state[lid] = {"ab": prediction, "support": 0.5, "alpha": 0.0, "frame": frame}
-            else:  # its own estimate, held near the samples' prediction
-                st["ab"] = 0.85 * st["ab"] + 0.15 * prediction
             z1 = min(LINE_Z_MAX, line["z_far"])
             z0 = 2.5 if z1 - line["z_near"] >= EXTEND_M else max(2.5, line["z_near"])
-            st.update(x=line["x"], solid=line["solid"], yellow=line["yellow"], sample_frame=frame,
-                      d_far=self.fh / z1, d_near=self.fh / z0)
+            d_far, d_near = self.fh / z1, self.fh / z0
+            key = self.follow(prediction, (d_far + d_near) / 2, taken)
+            if key is None:
+                key, self.next_id = self.next_id, self.next_id + 1
+                self.state[key] = {"ab": prediction, "support": 0.3, "alpha": 0.0, "measured": 0, "d_far": d_far,
+                                   "d_near_sample": d_near, "stripes": deque(maxlen=HISTORY_FRAMES),
+                                   "lowest": deque(maxlen=max(1, int(self.fps)))}
+            taken.add(key)
+            st = self.state[key]
+            st.update(x=line["x"], solid=line["solid"], yellow=line["yellow"], sample_frame=frame, prediction=prediction)
+            # the ends ease towards the samples' extent instead of jumping with it
+            st["d_far"] += EXTENT_GAIN * (d_far - st["d_far"])
+            st["d_near_sample"] += EXTENT_GAIN * (d_near - st["d_near_sample"])
         step = 1.0 / max(1.0, FADE_S * self.fps)
-        for lid, st in list(self.state.items()):
-            if junction or (lid not in seen and frame - st["sample_frame"] > KEEP_S * self.fps):
-                st["support"] = 0.0  # at a junction, or no longer reported: fade out
-            elif st["d_near"] - st["d_far"] > 10:
-                found = find_paint(bright, float(st["ab"][0]), float(st["ab"][1]), (st["d_far"], bottom),
-                                   self.horizon, self.lateral_h, boxes, contrast)
-                if found is not None:
-                    st["ab"] = st["ab"] + SNAP_GAIN * (np.array(found[:2]) - st["ab"])
-                    st["d_near"] = max(st["d_near"], min(found[2], bottom))
+        for key, st in list(self.state.items()):
+            unreported = (frame - st["sample_frame"]) / self.fps
+            gone = junction or unreported > KEEP_MAX_S or (unreported > KEEP_S and st["support"] < SHOW_SUPPORT)
+            found, looked = None, []
+            if not gone:
+                st["stripes"].append(find_stripes(bright, float(st["ab"][0]), float(st["ab"][1]), (st["d_far"], bottom),
+                                                  self.horizon, self.lateral_h, boxes, contrast, looked))
+                recent = [(d, u, w * HISTORY_WEIGHT ** age) for age, frame_stripes in enumerate(reversed(st["stripes"]))
+                          for d, u, w in frame_stripes]
+                found = fit_stripes(recent, bottom - st["d_far"], self.lateral_h)
+            if found is not None:
+                gain = LOCK_GAIN if st["measured"] < LOCK_FRAMES else SNAP_GAIN
+                st["ab"] = st["ab"] + gain * (np.array(found[:2]) - st["ab"])
+                st["measured"] += 1
+                st["lowest"].append(min(found[2], bottom))
+            elif not gone:
+                st["ab"] = st["ab"] + PREDICTION_PULL * (st["prediction"] - st["ab"])
+            # down to the lowest paint of the last second: a broken line's nearest dash comes and goes
+            st["d_near"] = max([st["d_near_sample"], *st["lowest"]])
+            if found is not None or gone or (looked and looked[0] >= SNAP_MIN_POINTS):
+                # paint found, or looked for and not there; a line hidden behind vehicles keeps its support
                 st["support"] = SUPPORT_DECAY * st["support"] + (1 - SUPPORT_DECAY) * (found is not None)
-            target = 1.0 if st["support"] >= SHOW_SUPPORT else 0.0
+            shown = st["support"] >= SHOW_SUPPORT or (st["alpha"] > 0 and st["support"] >= HIDE_SUPPORT)
+            target = 0.0 if gone or not shown else 1.0
             st["alpha"] = float(np.clip(st["alpha"] + np.sign(target - st["alpha"]) * step, 0.0, 1.0))
-            st["frame"] = frame
-            if st["alpha"] == 0.0 and target == 0.0:
-                del self.state[lid]
-        shown = sorted((st for st in self.state.values() if st["alpha"] > 0), key=lambda st: -st["support"])
-        kept: list[dict] = []  # two ids that settled on one painted line are drawn once
-        for st in shown:
+            if st["alpha"] == 0.0 and target == 0.0 and (gone or st["support"] < HIDE_SUPPORT):
+                del self.state[key]
+        # two lines that settled on one paint stripe become one: the better supported stays
+        for key in sorted(self.state, key=lambda k: self.state[k]["support"]):
+            st = self.state[key]
             d_mid = (st["d_far"] + st["d_near"]) / 2
-            u_mid = st["ab"][0] + st["ab"][1] * d_mid
-            if all(abs(u_mid - (k["ab"][0] + k["ab"][1] * d_mid)) > 0.25 * d_mid / self.lateral_h for k in kept):
-                kept.append(st)
-        return kept
+            if any(other is not st and self.apart_m(st["ab"], other["ab"], d_mid) < DUPLICATE_LINE_M
+                   and other["support"] >= st["support"] for other in self.state.values()):
+                del self.state[key]
+        return [st for st in self.state.values() if st["alpha"] > 0]
 
     def draw(self, image: np.ndarray, frame: int, in_bike_lane: bool, boxes: np.ndarray) -> None:
         """The lines as strips of paint in perspective, fading out towards where their paint was last seen, behind
