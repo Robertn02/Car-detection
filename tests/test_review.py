@@ -84,6 +84,20 @@ def test_a_new_vehicle_label_is_anchored_logged_and_undone(store, tmp_path):
     assert pd.read_csv(labels_dir / "track_anchors.csv").empty  # the card's anchors go too
 
 
+def test_a_plate_is_kept_with_the_labels_and_the_log_says_only_whether_it_was_read_right(store, tmp_path):
+    s, video, labels_dir = store
+    (tmp_path / "analysis" / video).mkdir(parents=True)
+    pd.DataFrame({"track_id": [5, 6], "plate_frame": 10, "plate_x1": 1.0, "plate_y1": 2.0, "plate_x2": 30.0,
+                  "plate_y2": 12.0}).to_parquet(tmp_path / "analysis" / video / "plates.parquet")
+    for item, typed in ((5, "7ABC123"), (6, "8XYZ999")):
+        s.save({"kind": "plate", "video": video, "item": item, "label": "plate", "model": "plate", "text": typed,
+                "model_text": "7ABC123", "reviewer": "prof"})
+    assert list(pd.read_csv(labels_dir / "plate_labels.csv").text) == ["7ABC123", "8XYZ999"]
+    log = pd.read_csv(labels_dir / "review_log.csv")
+    assert list(log.text) == ["kept", "corrected"] and "7ABC123" not in log.to_csv()
+    assert agreement(log)["plate"]["model_kept"] == 0.5
+
+
 def test_verifying_a_label_replaces_it_and_undo_restores_it(store):
     s, video, labels_dir = store
     pd.DataFrame([{"card_id": "T001_001", "video": video, "track_id": 6, "label": "parked", "labeler": "claude",

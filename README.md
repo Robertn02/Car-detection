@@ -51,8 +51,8 @@ Six rides, 112 minutes ([details and limitations](docs/TYPOLOGY_PIPELINE.md)):
 
 | Measure | Value |
 | --- | --- |
-| Relation right, labelled vehicles within 25 m (rides the model was not trained on) | 72% (76% within 16 m) |
-| Vehicles seen while the rider waited, called parked | 3.4% (91% of 56 such labelled vehicles right) |
+| Relation right, labelled vehicles within 25 m (rides the model was not trained on) | 71% (76% within 16 m) |
+| Vehicles seen while the rider waited, called parked | 4.1% (91% of 57 such labelled vehicles right) |
 | Distances and speeds against GPS (five rides) | within 3% after calibration (the camera alone: 1.5-1.9x short) |
 | Riding context right (307 labelled frames) | 89% |
 | Signs seen at least 40 px tall that get a type | 61%: 74% by day, 24% at night |
@@ -60,7 +60,8 @@ Six rides, 112 minutes ([details and limitations](docs/TYPOLOGY_PIPELINE.md)):
 
 Found on the six rides: 46 overtakes, 25 of them closer than 1.5 m, and 53 waits at red lights. Distances ahead and
 speeds are calibrated against the rides' Strava GPS (`python -m bikesafe.gps --calibrate`); side distances come from
-car widths. The labels come from AI-assisted review that a person has yet to check (the review page's verify queue) -
+car widths. Most labels come from AI-assisted review; a person has checked the first 20 on the review page, and the
+rest wait in its verify queue -
 see the [limitations](docs/TYPOLOGY_PIPELINE.md#known-limitations).
 
 ## Review and correct

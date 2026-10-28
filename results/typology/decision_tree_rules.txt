@@ -1,15 +1,15 @@
 |--- closing_ratio_med <= 0.63
 |   |--- closing_ratio_p10 <= 0.06
 |   |   |--- static_neighbours <= 2.50
-|   |   |   |--- frac_lat_flow_moving <= 0.13
-|   |   |   |   |--- v_along_flow_med <= 4.86
-|   |   |   |   |   |--- class: cross_side
-|   |   |   |   |--- v_along_flow_med >  4.86
+|   |   |   |--- grid_proj_p10 <= 0.97
+|   |   |   |   |--- frac_lat_flow_moving <= 0.13
 |   |   |   |   |   |--- class: adjacent_same
-|   |   |   |--- frac_lat_flow_moving >  0.13
-|   |   |   |   |--- grid_proj_p10 <= 1.06
+|   |   |   |   |--- frac_lat_flow_moving >  0.13
 |   |   |   |   |   |--- class: cross_side
-|   |   |   |   |--- grid_proj_p10 >  1.06
+|   |   |   |--- grid_proj_p10 >  0.97
+|   |   |   |   |--- ego_speed_med <= 5.11
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |   |--- ego_speed_med >  5.11
 |   |   |   |   |   |--- class: oncoming
 |   |   |--- static_neighbours >  2.50
 |   |   |   |--- closing_ratio_p90 <= 0.54
@@ -18,9 +18,9 @@
 |   |   |   |   |--- class: adjacent_same
 |   |--- closing_ratio_p10 >  0.06
 |   |   |--- view_front <= 0.13
-|   |   |   |--- frac_cross <= 0.04
+|   |   |   |--- x_at_min_z <= 0.65
 |   |   |   |   |--- class: ego_lane
-|   |   |   |--- frac_cross >  0.04
+|   |   |   |--- x_at_min_z >  0.65
 |   |   |   |   |--- class: ego_lane
 |   |   |--- view_front >  0.13
 |   |   |   |--- heading_fit_abs <= 2.53
@@ -30,23 +30,23 @@
 |--- closing_ratio_med >  0.63
 |   |--- ego_speed_med <= 0.22
 |   |   |--- depth_z_min <= 14.77
-|   |   |   |--- closing_ratio_p10 <= -0.63
-|   |   |   |   |--- p_bike_lane <= 0.24
-|   |   |   |   |   |--- class: cross_side
-|   |   |   |   |--- p_bike_lane >  0.24
-|   |   |   |   |   |--- class: cross_side
-|   |   |   |--- closing_ratio_p10 >  -0.63
+|   |   |   |--- frac_rider_stopped <= 0.79
 |   |   |   |   |--- class: cross_side
+|   |   |   |--- frac_rider_stopped >  0.79
+|   |   |   |   |--- p_shared_road <= 0.62
+|   |   |   |   |   |--- class: cross_side
+|   |   |   |   |--- p_shared_road >  0.62
+|   |   |   |   |   |--- class: cross_side
 |   |   |--- depth_z_min >  14.77
 |   |   |   |--- class: oncoming
 |   |--- ego_speed_med >  0.22
 |   |   |--- depth_x_at_min_z <= 1.67
-|   |   |   |--- closing_ratio_med <= 1.45
-|   |   |   |   |--- v_lat_flow_absmed <= 0.37
+|   |   |   |--- closing_ratio_med <= 1.39
+|   |   |   |   |--- view_side <= 0.37
 |   |   |   |   |   |--- class: adjacent_same
-|   |   |   |   |--- v_lat_flow_absmed >  0.37
+|   |   |   |   |--- view_side >  0.37
 |   |   |   |   |   |--- class: parked
-|   |   |   |--- closing_ratio_med >  1.45
+|   |   |   |--- closing_ratio_med >  1.39
 |   |   |   |   |--- v_lat_ratio <= 1.33
 |   |   |   |   |   |--- class: oncoming
 |   |   |   |   |--- v_lat_ratio >  1.33

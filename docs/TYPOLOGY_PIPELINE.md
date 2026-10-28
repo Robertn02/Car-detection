@@ -284,8 +284,8 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      a side either: what lies there is mostly the glare of the bike's own light at night, an arrow or a seam. On four
      demo windows lines appear or go 17-33 times a minute (40-78 before), most of them now these deliberate hides,
      and never three at once. Lines are drawn as strips of paint in perspective, down to the bottom of the picture
-     where the paint continues, behind the vehicles. Box labels are short ("same way 9m"), placed nearest vehicle first so none covers another (a far vehicle with no room keeps its box but no label), and the
-     banner shows the GPS speed where the ride has a track and the riding context most common over 7 s.
+     where the paint continues, behind the vehicles. Box labels are short ("same way 9m"), placed nearest vehicle
+     first so none covers another (a far vehicle with no room keeps its box but no label), and the banner shows the GPS speed where the ride has a track and the riding context most common over 7 s.
      Clips are H.264 (libx264, CRF 20, from the ffmpeg bundled with `imageio-ffmpeg`), so they play in a browser and
      in slides; the web demos are 2 minutes at CRF 23 capped at 5.5 Mbit/s, so each streams and stays under GitHub's
      100 MB a file (`scripts/build_site.py`).

@@ -19,6 +19,8 @@ shows the existing labels instead (most of them came from AI-assisted review), t
 
 Every decision goes to data/typology (or --labels) - track_labels.csv with track_anchors.csv (so labels survive a
 perception re-run), sign_labels.csv, plate_labels.csv - and to review_log.csv together with what the model had said.
+The plates typed stay in plate_labels.csv, which is kept out of the repository; the log, which is not, only says
+whether the reading was kept, corrected or unreadable.
 The Progress tab turns that log into how often each model agreed with the reviewer, per class; "Retrain" runs
 bikesafe.train and bikesafe.exposure so the next queue comes from the corrected models. This is the loop the pipeline
 learns from: model proposes, reviewer confirms or corrects, models retrain on the corrections.
@@ -152,6 +154,13 @@ def next_card_id(video: str, labels: pd.DataFrame, anchors: pd.DataFrame) -> str
     cards = pd.concat([labels.card_id, anchors.card_id]).dropna().astype(str)
     numbers = pd.to_numeric(cards[cards.str.startswith(prefix)].str[len(prefix):], errors="coerce").dropna()
     return f"{prefix}{int(numbers.max()) + 1 if len(numbers) else 1:03d}"
+
+
+def plate_outcome(text: object, model_text: object) -> dict:
+    """What the review log keeps of a plate decision: whether the reading was kept, corrected or unreadable - never
+    the plate (`text` == `model_text` where it was kept, as agreement() counts it)."""
+    typed, read = (str(t or "").upper().strip() for t in (text, model_text))
+    return {"text": "unreadable" if not typed else "kept" if typed == read else "corrected", "model_text": "kept"}
 
 
 def agreement(log: pd.DataFrame) -> dict:
@@ -486,6 +495,8 @@ class Store:
                 self._save_sign(video, int(d["item"]), int(d["row"]), human, str(d.get("text", "")), reviewer)
             elif kind == "plate" and human != "skip":
                 self._save_plate(video, int(d["item"]), str(d.get("text", "")).upper().strip(), reviewer)
+            if kind == "plate":
+                d = {**d, **plate_outcome(d.get("text"), d.get("model_text"))}
             entry = {"reviewer": reviewer, "kind": kind, "video": video, "item": d["item"], "model": d.get("model"),
                      "model_conf": d.get("model_conf"), "human": human, "text": d.get("text"),
                      "model_text": d.get("model_text")}
