@@ -119,8 +119,8 @@ def test_a_track_clip_plays_every_frame_with_the_box_in_between(tmp_path):
     out = tmp_path / "clip.mp4"
     track_clip(video, dets, 5, out)
     cap = cv2.VideoCapture(str(out))
-    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == (46 - 24 + 1) + 2 * 12  # the track, half a second either side
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 12 + 3)  # frame 27: not detected, box interpolated
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == (46 - 24 + 1) + 2 * 24  # the track, a second either side
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 24 + 3)  # frame 27: not detected, box interpolated
     ok, image = cap.read()
     cap.release()
     magenta = (image[..., 0] > 180) & (image[..., 1] < 90) & (image[..., 2] > 180)
@@ -139,8 +139,24 @@ def test_an_exported_page_runs_without_a_server_and_its_decisions_import(store, 
     decisions = tmp_path / "decisions.json"
     decisions.write_text(json.dumps([{"kind": "vehicle", "video": video, "item": 5, "label": "oncoming",
                                       "model": "parked", "reviewer": "prof", "time": "2026-10-23T10:00:00"}]))
-    assert import_decisions(s, decisions) == 1
+    assert import_decisions(s, decisions) == (1, 0)
     assert pd.read_csv(labels_dir / "track_labels.csv").iloc[0].label == "oncoming"
+    assert import_decisions(s, decisions) == (0, 1)  # the same file again adds nothing
+    assert len(pd.read_csv(labels_dir / "review_log.csv")) == 1
+    assert pd.read_csv(labels_dir / "review_log.csv").time.iloc[0] == "2026-10-23T10:00:00"  # when it was decided
+    decisions.write_text(json.dumps([{"kind": "vehicle", "video": video, "item": 6, "label": "car",
+                                      "reviewer": "prof", "time": "2026-10-23T10:01:00"}]))
+    with pytest.raises(SystemExit):
+        import_decisions(s, decisions)
+
+
+def test_undo_takes_back_only_the_decision_the_page_shows(store):
+    s, video, labels_dir = store
+    s.save({"kind": "vehicle", "video": video, "item": 5, "label": "oncoming", "model": "parked", "reviewer": "prof"})
+    assert not s.undo("prof", {"kind": "vehicle", "video": video, "item": 6})["ok"]  # another item on the page
+    assert len(pd.read_csv(labels_dir / "track_labels.csv")) == 1
+    assert s.undo("prof", {"kind": "vehicle", "video": video, "item": 5})["ok"]
+    assert pd.read_csv(labels_dir / "track_labels.csv").empty
 
 
 def test_card_ids_stay_unique_across_videos_with_the_same_ending():
@@ -182,3 +198,33 @@ def test_a_colab_run_and_its_decisions_join_the_rides_and_labels(store, tmp_path
     anchors = pd.read_csv(labels_dir / "track_anchors.csv")
     assert anchors.card_id.tolist() == ["T3min_002", "T3min_002"]
     assert len(pd.read_csv(labels_dir / "sign_labels.csv")) == 1
+
+
+def test_the_public_copy_leaves_out_what_was_filmed_in_a_privacy_zone(store, tmp_path, monkeypatch):
+    from bikesafe.review import export, private_seconds
+
+    s, video, _ = store
+    monkeypatch.setattr(s, "image", lambda kind, video, item, row=None: b"media")
+    seconds = np.arange(40)
+    pd.DataFrame({"second": seconds, "in_privacy_zone": seconds < 5}).to_csv(  # tracks start at 0, 10 and 20 s
+        tmp_path / "corpus" / video / "gps_1s.csv", index=False)
+    export(s, tmp_path / "site", per_queue=5)
+    queue = json.loads((tmp_path / "site" / "queue_vehicle_new.json").read_text())
+    assert {it["item"] for it in queue} == {6, 7}
+    (tmp_path / "corpus" / video / "gps_1s.csv").unlink()  # no GPS: the start and end of the ride are left out
+    pd.DataFrame({"second": np.arange(1000)}).to_csv(tmp_path / "corpus" / video / "timeline_1s.csv", index=False)
+    assert private_seconds(tmp_path / "corpus", video) == set(range(180)) | set(range(820, 1000))
+
+
+def test_cached_media_are_made_again_when_the_ride_s_tables_change(store, tmp_path):
+    s, video, _ = store
+    old = tmp_path / "cache" / video / "zoom_5.jpg"  # made before the cache was stamped
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"stale")
+    s.fresh_cache(video)
+    assert not old.exists() and (tmp_path / "cache" / video / "made_from.txt").exists()
+    kept = tmp_path / "cache" / video / "zoom_6.jpg"
+    kept.write_bytes(b"fresh")
+    s._fresh.clear()
+    s.fresh_cache(video)  # same tables: the cache stays
+    assert kept.exists()
