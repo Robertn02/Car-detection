@@ -91,6 +91,7 @@ main > section { margin-top: clamp(48px, 8vw, 96px); }
 .where { grid-area: where; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; min-height: 240px; position: relative; }
 .minimap { position: absolute; inset: 0; }
 .nomap { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 16px; margin: 0; max-width: none; }
+.nomap[hidden] { display: none; }
 .minimap .leaflet-tile-pane { filter: grayscale(.6) contrast(1.05); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .minimap .leaflet-tile-pane, :root:not([data-theme="light"]) .routes .leaflet-tile-pane {
   filter: invert(1) grayscale(1) brightness(.75) contrast(1.1); } }

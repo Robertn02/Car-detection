@@ -839,7 +839,7 @@ def main() -> None:
         rows = in_frame if not args.no_vehicles else in_frame.iloc[:0]
         if "n_det" in rows:  # a vehicle boxed twice is drawn once, with its longest track's box
             rows = rows.sort_values("n_det", ascending=False).drop_duplicates("vehicle_id")
-        rows = rows[(rows.box_h >= args.min_box_h) & rows.relation.apply(lambda r: isinstance(r, str))]
+        rows = rows[(rows.box_h >= args.min_box_h) & rows.relation.map(lambda r: isinstance(r, str)).astype(bool)]
         second = int(target / fps)
         info = line.loc[second] if second in line.index else None
         scene = shown_scene.get(second) if info is not None else None
