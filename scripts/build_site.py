@@ -69,6 +69,11 @@ LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4"
 # OpenStreetMap's own tiles need no key and have street names; the dark maps are the same tiles through a CSS filter
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TILE_CREDIT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+# Where tile.openstreetmap.org cannot be reached (a network whose DNS does not resolve it), the maps fall back to the
+# Humanitarian OSM style served by OpenStreetMap France: the same data, no key needed
+TILE_FALLBACK = {"url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+                 "credit": TILE_CREDIT + ', tiles <a href="https://www.hotosm.org/">HOT</a> hosted by '
+                                         '<a href="https://openstreetmap.fr/">OSM France</a>'}
 DARK_TILES = "invert(1) grayscale(1) brightness(0.75) contrast(1.1)"
 HEAT_RAMP = ["#2c1a6e", "#b3206e", "#f05a28", "#fbb33b", "#fffbe6"]  # least to most, on the map and its legend
 # heatmap layers: per-second counts from timeline_1s.csv (value = column or sum of columns)
@@ -326,7 +331,8 @@ def page_data(gps: dict, corpus: Path = CORPUS) -> dict:
             "kinds": {k: {"label": label, "colour": colour} for k, (label, colour) in KINDS.items()},
             "demos": demos, "figures": at_a_glance(corpus), "exposure": exposure,
             "resultsLede": "What a handlebar camera adds up to over 112 minutes of commuting in Los Angeles.",
-            "fineprint": accuracy_note() + calibrated, "tiles": {"url": TILE_URL, "credit": TILE_CREDIT}}
+            "fineprint": accuracy_note() + calibrated,
+            "tiles": {"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK}}
 
 
 def index_page(gps: dict) -> str:
@@ -343,8 +349,27 @@ def index_page(gps: dict) -> str:
 # the colours are the same at every zoom.
 EXPOSURE_MAP_JS = """
 const $ = s => document.querySelector(s);
+// the map's tiles; where tile.openstreetmap.org cannot be reached (some networks do not resolve it, and take seconds
+// to say so) - no tile in TILE_WAIT_MS, or more failing than loading (a few may come from the browser's cache) - the
+// same map data from a second server
+const TILE_WAIT_MS = 3000;
+function baseTiles(m, tiles) {
+  const layer = L.tileLayer(tiles.url, {attribution: tiles.credit, maxZoom: 19}).addTo(m);
+  let loads = 0, errors = 0, swapped = false;
+  const swap = () => {
+    if (swapped || !tiles.fallback) return;
+    swapped = true;
+    m.attributionControl.removeAttribution(tiles.credit).addAttribution(tiles.fallback.credit);
+    layer.options.attribution = tiles.fallback.credit;
+    layer.setUrl(tiles.fallback.url);
+  };
+  layer.on("tileload", () => { loads++; });
+  layer.on("tileerror", () => { if (++errors > loads) swap(); });
+  setTimeout(() => { if (!loads) swap(); }, TILE_WAIT_MS);
+  return layer;
+}
 const map = L.map("map", {preferCanvas: true});
-L.tileLayer(TILE_URL, {attribution: TILE_CREDIT, maxZoom: 19}).addTo(map);
+baseTiles(map, TILES);
 const EVENT_COLOURS = {close_pass_under_1p5m: "#ff4d4f", oncoming_close_pass: "#d36bff",
   vehicle_close_in_my_lane: "#ffd60a", overtaken_by_vehicle: "#f2f2f2"};  // apart from the riding-context colours
 const CELL_M = 20, LEVELS = 32;
@@ -470,8 +495,7 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
 </div>
 <script src="{LEAFLET}/leaflet.js"></script>
 <script>
-const TILE_URL = {json.dumps(TILE_URL)};
-const TILE_CREDIT = {json.dumps(TILE_CREDIT)};
+const TILES = {json.dumps({"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK})};
 const HEAT_RAMP = {json.dumps(HEAT_RAMP)};{EXPOSURE_MAP_JS}
 </script></body></html>
 '''
