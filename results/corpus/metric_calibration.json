@@ -1,0 +1,69 @@
+{
+  "method": "bikesafe.gps.calibrate: distance from parked cars' closing speed, speed from GPS speed",
+  "default": {
+    "metric_scale": 1.581,
+    "flow_scale": 1.06
+  },
+  "rides": {
+    "VID_20260209_090112_00_001": {
+      "speed_ratio": 1.58,
+      "speed_seconds": 527,
+      "parked_ratio": 1.537,
+      "parked_tracks": 163,
+      "now": {
+        "gps_over_video_speed": 1.001,
+        "gps_over_parked_closing": 1.013
+      },
+      "metric_scale": 1.543,
+      "flow_scale": 1.023
+    },
+    "VID_20260209_183334_00_002": {
+      "speed_ratio": 1.738,
+      "speed_seconds": 568,
+      "parked_ratio": 1.735,
+      "parked_tracks": 9,
+      "now": {
+        "gps_over_video_speed": 1.0,
+        "gps_over_parked_closing": 0.974
+      },
+      "metric_scale": 1.617,
+      "flow_scale": 1.075
+    },
+    "VID_20260223_090217_00_003": {
+      "speed_ratio": 1.626,
+      "speed_seconds": 598,
+      "parked_ratio": 1.524,
+      "parked_tracks": 141,
+      "now": {
+        "gps_over_video_speed": 1.0,
+        "gps_over_parked_closing": 1.009
+      },
+      "metric_scale": 1.534,
+      "flow_scale": 1.06
+    },
+    "VID_20260223_183551_00_004": {
+      "speed_ratio": 1.865,
+      "speed_seconds": 634,
+      "parked_ratio": 1.439,
+      "parked_tracks": 15,
+      "now": {
+        "gps_over_video_speed": 1.005,
+        "gps_over_parked_closing": 0.984
+      },
+      "metric_scale": 1.534,
+      "flow_scale": 1.216
+    },
+    "VID_20260224_162848_00_006": {
+      "speed_ratio": 1.594,
+      "speed_seconds": 699,
+      "parked_ratio": 1.684,
+      "parked_tracks": 213,
+      "now": {
+        "gps_over_video_speed": 0.999,
+        "gps_over_parked_closing": 1.015
+      },
+      "metric_scale": 1.672,
+      "flow_scale": 0.954
+    }
+  }
+}

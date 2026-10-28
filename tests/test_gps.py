@@ -78,3 +78,55 @@ def test_a_video_is_matched_to_the_activity_recorded_while_it_was_filmed(tmp_pat
     hit = match_activity(activities, START, START + pd.Timedelta(minutes=15))
     assert hit is not None and hit["Activity ID"] == 1
     assert match_activity(activities, START + pd.Timedelta(hours=3), START + pd.Timedelta(hours=3, minutes=10)) is None
+
+
+def test_the_metric_scale_is_measured_from_parked_cars_and_the_gps_speed(tmp_path):
+    import json
+
+    from bikesafe.gps import calibrate, metric_scales
+
+    video = "VID_20260224_162848_00_006"
+    (tmp_path / "corpus" / video).mkdir(parents=True)
+    (tmp_path / "analysis" / video).mkdir(parents=True)
+    seconds = np.arange(200)
+    gps = np.full(200, 6.0)  # the rider rides at 6 m/s
+    pd.DataFrame({"second": seconds, "gps_speed_mps": gps}).to_csv(tmp_path / "corpus" / video / "gps_1s.csv", index=False)
+    # the camera reads speeds 0.6 of the truth and distances 0.625 of it (its focal length is too short), and the
+    # flow reads the forward rate a little low on top: video speed = 6 * 0.625 * 0.96 = 3.6
+    pd.DataFrame({"second": seconds, "ego_speed_mps": 3.6}).to_csv(tmp_path / "corpus" / video / "timeline_1s.csv", index=False)
+    rows, tracks = [], []
+    for k in range(40):  # parked cars passed one after another, their distance shrinking at 6 m/s * 0.625
+        t = 4.0 * k + np.arange(0, 3, 1 / 12)
+        rows.append(pd.DataFrame({"track_id": k, "time_s": t, "z_m": 20 - 0.625 * 6.0 * (t - t[0]), "geom_ok": True}))
+        tracks.append({"track_id": k, "vehicle_relation": "parked", "proba_parked": 0.95, "n_det": 36})
+    pd.concat(rows).to_parquet(tmp_path / "analysis" / video / "kinematics.parquet")
+    pd.DataFrame(tracks).to_csv(tmp_path / "corpus" / video / "tracks_typed.csv", index=False)
+    (tmp_path / "analysis" / video / "calibration.json").write_text(json.dumps({"metric_scale": 1.0, "flow_scale": 1.0}))
+    table = calibrate(tmp_path / "corpus", tmp_path / "analysis")
+    ride = table["rides"][video]
+    assert abs(ride["metric_scale"] - 1.6) < 0.02 and abs(ride["metric_scale"] * ride["flow_scale"] - 6 / 3.6) < 0.02
+    path = tmp_path / "metric_calibration.json"
+    path.write_text(json.dumps(table))
+    assert metric_scales(video, path) == (ride["metric_scale"], ride["flow_scale"])
+    assert metric_scales("VID_20260101_000000_00_009", path) == (table["default"]["metric_scale"],
+                                                                 table["default"]["flow_scale"])
+    # tables already made with the scale: measured again, the scale does not compound
+    (tmp_path / "analysis" / video / "calibration.json").write_text(json.dumps(
+        {"metric_scale": ride["metric_scale"], "flow_scale": ride["flow_scale"]}))
+    scaled = pd.concat(rows).assign(z_m=lambda d: d.z_m * ride["metric_scale"])
+    scaled.to_parquet(tmp_path / "analysis" / video / "kinematics.parquet")
+    pd.DataFrame({"second": seconds, "ego_speed_mps": 6.0}).to_csv(tmp_path / "corpus" / video / "timeline_1s.csv", index=False)
+    again = calibrate(tmp_path / "corpus", tmp_path / "analysis")["rides"][video]
+    assert abs(again["metric_scale"] - ride["metric_scale"]) < 0.02
+    assert abs(again["now"]["gps_over_video_speed"] - 1.0) < 0.02 and abs(again["now"]["gps_over_parked_closing"] - 1.0) < 0.02
+
+
+def test_geometry_in_true_metres_with_the_measured_scale():
+    from dataclasses import replace
+
+    from bikesafe.geometry import Calibration, ego_moving_threshold
+
+    calib = Calibration(1920, 1080, 12.0, 2, 600.0, 0.78, 1.2, 1.3, 672.0, 100, 4.0)
+    scaled = replace(calib, metric_scale=1.6)
+    assert scaled.metric_focal_px == 672.0 * 1.6
+    assert ego_moving_threshold(scaled) * 1.6 == ego_moving_threshold(calib)  # the same speed in true metres

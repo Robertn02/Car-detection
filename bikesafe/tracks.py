@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -14,27 +15,33 @@ import pandas as pd
 from bikesafe.common import ROOT, VIDEOS, SCENES, read_json, resolve_video, write_json
 from bikesafe.geometry import (DEFAULT_HFOV_DEG, detection_kinematics, ego_from_tracking, ego_motion, fit_horizon,
                                flow_grid_reference)
+from bikesafe.gps import metric_scales
 from bikesafe.identity import CACHE as APPEARANCE_CACHE, appearance_descriptors, remap_ids, split_switches
 from bikesafe.infrastructure import REF_Z, parse_lines, per_second_summary
 from bikesafe.scene import crop_scores, scene_probabilities
 from bikesafe.stitch import stitch, vehicle_ids
 
-STATIC_MPS = 1.5
+# Speeds and distances along the road are in metres measured against GPS since version 8 (bikesafe.gps --calibrate);
+# the thresholds along the road were chosen on the uncalibrated scale and are the same ones in true metres (x 1.6).
+# Sideways distances and speeds come from car widths and were already in metres.
+STATIC_MPS = 2.4
 CROSS_MPS = 1.5
 # 3: depth-free flow motion cues and lane-paint relations; 4: vehicle ids (bikesafe.stitch); 5: share of a track's
 # samples whose flow is consistent with a static / co-moving / approaching vehicle, and where the vehicle stands
 # relative to the kerb (bikesafe.streetseg); 6: time spent in the rider's path, and in it while the rider is stopped;
-# 7: the vehicle's own motion while the rider is stopped. bikesafe.run recomputes tracks written by older versions.
-FEATURES_VERSION = 7
+# 7: the vehicle's own motion while the rider is stopped; 8: distances and speeds in metres calibrated against GPS.
+# bikesafe.run recomputes tracks written by older versions.
+FEATURES_VERSION = 8
 CLOSING_STATIC, CLOSING_WITH, CLOSING_AGAINST = (0.7, 1.45), 0.5, 1.7  # closing_ratio bands
 GRID_STATIC, GRID_WITH, GRID_AGAINST = (0.7, 1.4), 0.45, 1.7  # grid_proj bands
 KERB_CLOSE_M = 0.8
 # The rider's path ahead: the vehicle's near edge within IN_PATH_M of the heading, within IN_PATH_Z. Farther out, or
 # with the box centre instead of its near edge, kerbside parked cars on a narrow or curving street count as "in path"
 # (34% of labelled parked tracks with 1.2 m / 20 m, against 7% with these values; in-my-lane: 50% and 28%).
-IN_PATH_M, IN_PATH_Z, STOPPED_MPS = 0.3, 10.0, 1.0
+IN_PATH_M, IN_PATH_Z, STOPPED_MPS = 0.3, 16.0, 1.6
 # While the rider waits (ego speed below RIDER_STOPPED_MPS) the camera is still, so a box's motion is the vehicle's own
-OWN_MOVING_MPS, RIDER_STOPPED_MPS, MIN_SCALE_PIXELS = 1.0, 0.5, 36
+OWN_MOVING_MPS, RIDER_STOPPED_MPS, MIN_SCALE_PIXELS = 1.6, 0.8, 36
+MIN_RATIO_SPEED = 0.8  # m/s; rider speed floor when dividing by it
 
 
 def q(series: pd.Series, p: float) -> float:
@@ -68,7 +75,7 @@ def world_trajectory(t: pd.DataFrame) -> dict:
     heading = float(np.degrees(np.arctan2(vx, vz)))
     ego_speed = float(usable.ego_speed_mps.median())
     out.update(world_speed=float(np.hypot(vx, vz)), world_heading_deg=heading, world_heading_abs=abs(heading),
-               world_speed_ratio=float(np.hypot(vx, vz) / max(ego_speed, 0.5)), world_fit_span_s=span)
+               world_speed_ratio=float(np.hypot(vx, vz) / max(ego_speed, MIN_RATIO_SPEED)), world_fit_span_s=span)
     return out
 
 
@@ -121,8 +128,8 @@ def aggregate_track(t: pd.DataFrame, width: int, height: int) -> dict:
         "x_at_min_z": float(t.x_center_m.iloc[int(np.argmin(t.z_m.to_numpy()))]),
         "x_inner_at_min_z": float(t.x_inner_m.iloc[int(np.argmin(t.z_m.to_numpy()))]),
         "frac_close_pass": float((t.x_inner_m.abs() < 1.5).mean()),
-        "v_along_ratio": float(q(va, 0.5) / max(q(t.ego_speed_mps, 0.5), 0.5)),
-        "v_lat_ratio": float(q(vl.abs(), 0.5) / max(q(t.ego_speed_mps, 0.5), 0.5)),
+        "v_along_ratio": float(q(va, 0.5) / max(q(t.ego_speed_mps, 0.5), MIN_RATIO_SPEED)),
+        "v_lat_ratio": float(q(vl.abs(), 0.5) / max(q(t.ego_speed_mps, 0.5), MIN_RATIO_SPEED)),
         "det_rate": float(len(t) / max(last.time_s - first.time_s, 1e-3)),
         "aspect_p90": float((t.box_w / t.box_h).quantile(0.9)),
         "geom_valid_frac": float(t.geom_ok.mean()),
@@ -196,7 +203,7 @@ def flow_motion_summary(t: pd.DataFrame) -> dict:
     out["closing_ratio_p90"] = q(closing, 0.9)
     along = t.v_along_flow_mps if "v_along_flow_mps" in t else pd.Series(dtype=float)
     out["v_along_flow_med"] = q(along, 0.5)
-    out["v_along_flow_ratio"] = float(q(along, 0.5) / max(q(t.ego_speed_mps, 0.5), 0.5))
+    out["v_along_flow_ratio"] = float(q(along, 0.5) / max(q(t.ego_speed_mps, 0.5), MIN_RATIO_SPEED))
     proj = t.grid_proj if "grid_proj" in t else pd.Series(dtype=float)
     out["grid_n"] = int(proj.notna().sum())
     out["grid_proj_med"] = q(proj, 0.5)
@@ -226,13 +233,16 @@ def kerb_context_features(context: pd.DataFrame) -> pd.DataFrame:
         under_offroad_med=("under_offroad", "median"), n_context=("kerb_close", "size")).reset_index()
 
 
-def lane_relation_features(kin: pd.DataFrame, lanes: pd.DataFrame, bike_lane: pd.Series | None) -> pd.DataFrame:
+def lane_relation_features(kin: pd.DataFrame, lanes: pd.DataFrame, bike_lane: pd.Series | None,
+                           metric_scale: float = 1.0) -> pd.DataFrame:
     """Where each vehicle sits relative to the painted lines found by bikesafe.infrastructure.
 
     For every detection on a sampled frame, the lines are evaluated at the vehicle's distance (they were fitted
     2.5-14 m ahead, so only vehicles within 16 m count) and the lines between the rider's path and the vehicle's near
     side are counted. Also: the share of the track during which the rider was in a painted bike lane, which turns
     "a car in front, in my path" into an intrusion and "a car just left of me" into traffic in the next lane.
+    The lines are in the bird's-eye view's distances, measured with the assumed focal length: a vehicle's distance is
+    divided by the ride's metric_scale (bikesafe.geometry) to meet them.
     """
     if lanes.empty:
         return pd.DataFrame()
@@ -240,15 +250,16 @@ def lane_relation_features(kin: pd.DataFrame, lanes: pd.DataFrame, bike_lane: pd
     for row in lanes.itertuples():
         items = parse_lines(row.lines_json)
         parsed[int(row.frame)] = tuple(np.array(col, float) for col in zip(*items)) if items else ()
-    sampled = kin[kin.frame.isin(parsed) & kin.x_inner_m.notna() & kin.z_m.between(2.0, 16.0)]
+    kin = kin.assign(z_view=kin.z_m / metric_scale)
+    sampled = kin[kin.frame.isin(parsed) & kin.x_inner_m.notna() & kin.z_view.between(2.0, 16.0)]
     rows = []
-    for det in sampled[["track_id", "frame", "x_inner_m", "z_m"]].itertuples(index=False):
+    for det in sampled[["track_id", "frame", "x_inner_m", "z_view"]].itertuples(index=False):
         if not parsed[int(det.frame)]:
             rows.append((det.track_id, 0, 0, 0, np.nan))
             continue
         xs, solid, yellow, shear = parsed[int(det.frame)]
         solid = solid.astype(bool)
-        at_vehicle = xs + shear * (det.z_m - REF_Z)
+        at_vehicle = xs + shear * (det.z_view - REF_Z)
         lo, hi = sorted((0.0, det.x_inner_m))
         between = (at_vehicle > lo) & (at_vehicle < hi)
         left_edge = at_vehicle[at_vehicle <= -0.3].max() if (at_vehicle <= -0.3).any() else -np.inf
@@ -342,7 +353,7 @@ def neighbour_features(tracks: pd.DataFrame, window_s: float = 10.0, lateral_m: 
 
 
 def scene3d_features(scene3d: pd.DataFrame, ego: pd.DataFrame, source_fps: float, focal_px: float,
-                     max_gap_s: float = 1.5, moving_mps: float = 1.5) -> pd.DataFrame:
+                     max_gap_s: float = 1.5, moving_mps: float = 2.4) -> pd.DataFrame:
     """Per-track bird's-eye geometry: distance, lateral offset, lane lines crossed, and world heading.
 
     Heading comes from consecutive depth samples with the rider's own motion removed: the rider advances by the
@@ -445,6 +456,8 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
     dets = pd.read_parquet(perception_dir / "detections.parquet")
     calib = fit_horizon(dets, meta["width"], meta["height"], meta["processed_fps"], meta["stride"],
                         hfov_deg=DEFAULT_HFOV_DEG if hfov_deg is None else hfov_deg)
+    metric, flow_rate = metric_scales(stem)  # measured against the ride's GPS, or the rides' median without it
+    calib = replace(calib, metric_scale=metric, flow_scale=flow_rate)
     # opt-in: cut tracks where the tracker handed the id to another vehicle (bikesafe.identity) - it raised IDF1 on the
     # reference sequence but lowered relation accuracy on the labels, so the tracker's ids are kept by default
     dets = split_identities(dets, perception_dir, meta, videos) if identity_split else dets.assign(raw_track_id=dets.track_id)
@@ -495,7 +508,7 @@ def analyze_video(perception_dir: Path, out_root: Path, scene_probe=None, hfov_d
         objects = pd.read_parquet(objects_path) if objects_path.exists() else pd.DataFrame()
         n_seconds = int(max(ego.time_s.max(), 0)) + 1
         bike_lane = per_second_summary(lanes, objects, n_seconds).in_bike_lane
-        lane_features = lane_relation_features(kin, lanes, bike_lane)
+        lane_features = lane_relation_features(kin, lanes, bike_lane, calib.metric_scale)
         if len(lane_features):
             tracks = tracks.merge(lane_features, on="track_id", how="left")
     context_path = out_dir / "vehicle_context.parquet"

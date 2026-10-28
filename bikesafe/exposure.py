@@ -48,13 +48,15 @@ from bikesafe.signs import NAMED_SIGNS, corpus_street_names
 from bikesafe.tracks import rule_relation
 
 MIN_VISIBLE_BOX_H = 20
-RELIABLE_Z_M = 15.0  # relations are validated within this range (results/typology/relation_accuracy_by_distance.csv)
-OVERTAKE_MAX_Z = 8.0  # metres; a passing vehicle is alongside the rider
+# Distances and speeds are in metres calibrated against GPS (bikesafe.gps --calibrate); these thresholds were set
+# on the earlier, uncalibrated scale and are the same ones in true metres (x 1.6).
+RELIABLE_Z_M = 25.0  # relations are validated within this range (results/typology/relation_accuracy_by_distance.csv)
+OVERTAKE_MAX_Z = 13.0  # metres; a passing vehicle is alongside the rider
 # An overtake is followed for at least a second (passing parked cars gave sub-second fragments that seemed to pull
 # away), passes beside the rider within about a lane's width (a box straddling the rider's heading, side gap 0, is in
 # the rider's path, not beside it) and no faster than any traffic here could (fragments gave up to 130 m/s).
-OVERTAKE_MIN_DET, OVERTAKE_MAX_GAP_M, OVERTAKE_MAX_DV = 12, 3.5, 15.0
-EGO_MOVING_MPS = 1.0  # the rider is moving above this speed
+OVERTAKE_MIN_DET, OVERTAKE_MAX_GAP_M, OVERTAKE_MAX_DV = 12, 3.5, 24.0
+EGO_MOVING_MPS = 1.6  # the rider is moving above this speed
 MIN_SIGN_SAMPLES = 2  # a sign counted in the summary was seen on at least this many samples (half a second apart)
 SAME_STOP_S = 3.0  # stop-sign objects this close in time are one sign the object linker split
 EMERGENCY_SHORTLIST = 10
@@ -220,11 +222,11 @@ def timeline(kin: pd.DataFrame, tracks: pd.DataFrame, ego: pd.DataFrame, scene: 
     for rel in RELATIONS:
         out[f"n_{rel}"] = counts[rel] if rel in counts else 0
     out = out.fillna({f"n_{rel}": 0 for rel in RELATIONS}).astype({f"n_{rel}": int for rel in RELATIONS})
-    near = df[df.z_m < 20]
+    near = df[df.z_m < 32]
     out["min_z_ego_lane_m"] = df[df.relation == "ego_lane"].groupby("second").z_m.min()
     out["min_lateral_adjacent_m"] = near[near.relation == "adjacent_same"].groupby("second").x_inner_m.apply(lambda s: s.abs().min())
     out["min_lateral_oncoming_m"] = near[near.relation == "oncoming"].groupby("second").x_inner_m.apply(lambda s: s.abs().min())
-    door = df[(df.relation == "parked") & (df.x_inner_m > 0) & (df.x_inner_m < 1.5) & (df.z_m < 10)]
+    door = df[(df.relation == "parked") & (df.x_inner_m > 0) & (df.x_inner_m < 1.5) & (df.z_m < 16)]
     out["door_zone_parked"] = door.groupby("second").vehicle_id.nunique()
     out["door_zone_parked"] = out.door_zone_parked.fillna(0).astype(int)
     if start_local:
@@ -243,9 +245,9 @@ def events(tracks: pd.DataFrame, kin: pd.DataFrame) -> pd.DataFrame:
                 "x_inner_absmin_m": round(t.x_inner_absmin, 2)}
         # A real overtake passes beside the rider, so it must come close; otherwise "clearance" is just distance.
         clearance = abs(t.x_inner_at_min_z)
-        overtaking = (t.z_first < 15 and t.z_min <= OVERTAKE_MAX_Z and t.log_growth < -0.15
-                      and t.n_det >= OVERTAKE_MIN_DET and t.ego_speed_med > 1.0
-                      and t.ego_speed_med + 0.5 < t.v_along_med <= t.ego_speed_med + OVERTAKE_MAX_DV
+        overtaking = (t.z_first < RELIABLE_Z_M and t.z_min <= OVERTAKE_MAX_Z and t.log_growth < -0.15
+                      and t.n_det >= OVERTAKE_MIN_DET and t.ego_speed_med > EGO_MOVING_MPS
+                      and t.ego_speed_med + 0.8 < t.v_along_med <= t.ego_speed_med + OVERTAKE_MAX_DV
                       and 0 < clearance <= OVERTAKE_MAX_GAP_M)
         if overtaking:
             rows.append({**base, "event": "overtaken_by_vehicle", "clearance_m": round(clearance, 2),
@@ -254,11 +256,11 @@ def events(tracks: pd.DataFrame, kin: pd.DataFrame) -> pd.DataFrame:
             if clearance < 1.5:
                 rows.append({**base, "event": "close_pass_under_1p5m", "clearance_m": round(clearance, 2),
                              "side": "left" if t.x_at_min_z < 0 else "right"})
-        if t.vehicle_relation == "ego_lane" and t.z_min < 6:
+        if t.vehicle_relation == "ego_lane" and t.z_min < 10:
             rows.append({**base, "event": "vehicle_close_in_my_lane"})
-        if t.vehicle_relation == "cross_side" and t.z_min < 12:
+        if t.vehicle_relation == "cross_side" and t.z_min < 20:
             rows.append({**base, "event": "crossing_traffic_near"})
-        if t.vehicle_relation == "oncoming" and t.x_inner_absmin < 1.5 and t.z_min < 15:
+        if t.vehicle_relation == "oncoming" and t.x_inner_absmin < 1.5 and t.z_min < RELIABLE_Z_M:
             rows.append({**base, "event": "oncoming_close_pass"})
     frame = pd.DataFrame(rows)
     # The zero-shot emergency score is not comparable across videos or lighting, so flag a short review list

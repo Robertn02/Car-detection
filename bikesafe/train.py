@@ -2,7 +2,7 @@
 
 Compares (1) the hand-written rules, (2) a depth-limited decision tree on physical features (readable rules
 learned from labels), (3) gradient boosting and (4) extra trees on the physics-defined features. The best model by
-macro-F1 within 15 m across held-out videos is refit on all labels and saved for bikesafe.exposure.
+macro-F1 within NEAR_Z_M across held-out videos is refit on all labels and saved for bikesafe.exposure.
 Also writes feature_ablation.csv (the feature sets of feature_sets(): version 2, + flow motion, version 3 = + lane
 paint, + flow consistency, version 5 = + kerb context, + path, version 7 = + motion while the rider is stopped, and
 version 8 - geometry, flow and stopped-rider motion - which the model uses) and scores the riding context for the
@@ -52,6 +52,10 @@ PHYSICAL_FEATURES_V2 = [
 ]
 # Version 3: depth-free motion from the stored optical flow (bikesafe.geometry.add_flow_motion). The most frequent
 # v2 error was a moving vehicle called parked: 12 of 23 oncoming and 9 of 25 same-direction tracks within 15 m.
+# Metres calibrated against GPS (bikesafe.gps --calibrate): the range where relations are judged and its bins are the
+# earlier 15 m and 5/10/15/25 m on the uncalibrated scale, in true metres
+NEAR_Z_M = 25.0
+DISTANCE_BINS = [0, 8, 16, 25, 40, 1000]
 FLOW_FEATURES = [
     "closing_ratio_med", "closing_ratio_p10", "closing_ratio_p90", "v_lat_flow_absmed", "v_lat_flow_absp90",
     "v_lat_flow_out_med", "frac_lat_flow_moving", "v_along_flow_med", "v_along_flow_ratio", "grid_proj_med",
@@ -372,7 +376,7 @@ def main() -> None:
     parser.add_argument("--videos", type=Path, default=VIDEOS)
     parser.add_argument("--out", type=Path, default=ROOT / "results" / "typology")
     parser.add_argument("--models", type=Path, default=ROOT / "models" / "typology")
-    parser.add_argument("--near-z", type=float, default=15.0,
+    parser.add_argument("--near-z", type=float, default=NEAR_Z_M,
                         help="Vehicles whose closest approach is within this distance (m) are the deployment domain")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -411,7 +415,7 @@ def main() -> None:
                 for c in s["report"] if c in RELATIONS + SCENES}} for k, s in summary.items()}
 
     accuracy_by_distance = (data.assign(correct=data.label == pd.read_csv(args.out / "relation_lovo_predictions.csv")[f"pred_{best}"],
-                                        bin=pd.cut(data.z_min, [0, 5, 10, 15, 25, 1000]))
+                                        bin=pd.cut(data.z_min, DISTANCE_BINS))
                             .groupby("bin", observed=True).correct.agg(["size", "mean"]).round(3))
     accuracy_by_distance.to_csv(args.out / "relation_accuracy_by_distance.csv")
     result = {"n_track_labels": int(len(data)), "label_counts": data.label.value_counts().to_dict(),
