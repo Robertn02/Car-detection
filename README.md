@@ -23,12 +23,15 @@ whole video (a 20-minute ride takes about 1.5 hours on an L4).
 
 ## Demos
 
-| Painted bike lane | Following a car from a red light | Parked rows, then a red light |
+| Green-painted bike lane | Bike lane beside traffic: three overtakes | Two close passes, then a red light |
 | --- | --- | --- |
-| [![bike lane](demos/overlay_006_bikelane_440s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_bikelane_440s) | [![following](demos/overlay_005_following_280s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_280s) | [![parked](demos/overlay_006_parked_700s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_700s) |
+| [![green lane](demos/overlay_001_greenlane_600s.jpg)](https://robertn02.github.io/Car-detection/#overlay_001_greenlane_600s) | [![overtakes](demos/overlay_006_overtakes_225s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_overtakes_225s) | [![close passes](demos/overlay_005_closepass_800s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_closepass_800s) |
+| **Following a car from a red light** | **Parked rows, then a red light** | **At night: close passes and a red light** |
+| [![following](demos/overlay_005_following_280s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_280s) | [![parked](demos/overlay_006_parked_700s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_700s) | [![night](demos/overlay_002_night_350s.jpg)](https://robertn02.github.io/Car-detection/#overlay_002_night_350s) |
 
-Click a picture to play the clip (60 s, the camera's full size and frame rate). Box colours: red in my lane, orange
-other lane, magenta oncoming, grey parked, blue side road.
+Click a picture to play the clip (60 s, the camera's full size and frame rate); under each clip, its events jump the
+video there. Box colours: red in my lane, orange other lane, magenta oncoming, grey parked, blue side road; lane lines
+are drawn on the road paint, green beside the rider in a bike lane.
 
 ## Outputs
 
@@ -48,11 +51,16 @@ Six rides, 112 minutes ([details and limitations](docs/TYPOLOGY_PIPELINE.md)):
 
 | Measure | Value |
 | --- | --- |
-| Relation right, vehicles within 15 m | 73% (77% within 5 m) |
-| Vehicles at a stop called parked | under 4% |
-| Riding context right | 89% |
-| Signs typed (seen at least 40 px tall) | 61% |
-| Plates read (daytime tracks) | 12-16% |
+| Relation right, labelled vehicles within 15 m (rides the model was not trained on) | 71% (77% within 5 m) |
+| Vehicles seen while the rider waited, called parked | 4.5% (92% of 52 such labelled vehicles right) |
+| Riding context right (307 labelled frames) | 89% |
+| Signs seen at least 40 px tall that get a type | 61%: 74% by day, 24% at night |
+| Plates read, daytime tracks boxed at least 60 px tall | 12-16% (8-10% of all tracks) |
+
+Found on the six rides: 45 overtakes, 25 of them closer than 1.5 m, and 55 waits at red lights. The labels come from
+AI-assisted review that a person has yet to check (the review page's verify queue), and speeds and distances measured
+from the video read about 0.6 of the GPS speed, so the metres are not yet calibrated - see the
+[limitations](docs/TYPOLOGY_PIPELINE.md#known-limitations).
 
 ## Review and correct
 
@@ -63,8 +71,10 @@ python -m bikesafe.review      # open http://127.0.0.1:8765
 Shows the model's answers - vehicles, signs, plates - most likely errors first. Confirm or correct with one key;
 "Retrain" learns from the corrections. In Colab, the notebook's last cell opens it.
 
-A copy that needs no server is on the [project page](https://robertn02.github.io/Car-detection/review/): decisions made there stay in the browser until
-downloaded (Progress tab); `python -m bikesafe.review --import decisions.json` adds them to the labels.
+A copy that needs no server is on the [project page](https://robertn02.github.io/Car-detection/review/): enter
+your name, decide with a key or a button (it works on a phone too), and download the decisions (the button in the
+header) when done - they stay in the browser until then. `python -m bikesafe.review --import decisions_<name>_<date>.json`
+adds them to the labels; importing a file twice adds it once.
 Decisions made in Colab are saved with the run on Drive; `python -m bikesafe.review --import "<run folder>"` adds the
 run and its decisions here, then Retrain.
 

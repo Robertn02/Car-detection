@@ -36,10 +36,20 @@ from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS  # no
 
 REPO = "https://github.com/Robertn02/Car-detection"
 COLAB = "https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb"
-# file name, ride, start (s), title
-DEMOS = [("overlay_006_bikelane_440s", "VID_20260224_162848_00_006", 440, "Painted bike lane"),
-         ("overlay_005_following_280s", "VID_20260224_091119_00_005", 280, "Following a car from a red light"),
-         ("overlay_006_parked_700s", "VID_20260224_162848_00_006", 700, "Parked rows, then a red light")]
+# file name, ride, start (s), title, what to look for. Windows are outside the rides' privacy zones (bikesafe.review.
+# private_seconds) and were picked from the events: each shows what its title says.
+DEMOS = [("overlay_001_greenlane_600s", "VID_20260209_090112_00_001", 600, "Green-painted bike lane",
+          "The riding context turns to bike lane on the green lane, and the lines beside the rider turn green."),
+         ("overlay_006_overtakes_225s", "VID_20260224_162848_00_006", 225, "Bike lane beside traffic: three overtakes",
+          "Cars in the lane to the left pass the rider; each overtake is measured by its side gap."),
+         ("overlay_005_closepass_800s", "VID_20260224_091119_00_005", 800, "Two close passes, then a red light",
+          "Two vehicles pass within 1.5 m on the left; the rider then waits at a red light."),
+         ("overlay_005_following_280s", "VID_20260224_091119_00_005", 280, "Following a car from a red light",
+          "The car ahead in the rider's lane is red: in my lane, with its distance."),
+         ("overlay_006_parked_700s", "VID_20260224_162848_00_006", 700, "Parked rows, then a red light",
+          "Parked cars (grey) line the kerb while traffic waits at the junction; side-road traffic is blue."),
+         ("overlay_002_night_350s", "VID_20260209_183334_00_002", 350, "At night: close passes and a red light",
+          "Detection works by headlight and street light; lane paint is found where the light reaches it.")]
 DURATION_S = 60
 CRF, MAX_MBPS = 23, 10
 POSTER_WIDTH = 1280
@@ -95,7 +105,7 @@ def poster(clip: Path, *targets: Path) -> None:
 
 
 def render(out: Path, again: bool) -> None:
-    for name, ride, start, _ in DEMOS:
+    for name, ride, start, *_ in DEMOS:
         clip = out / "demos" / f"{name}.mp4"
         if clip.exists() and not again:
             continue
@@ -134,7 +144,7 @@ def polylines(t: pd.DataFrame, every: int = 2) -> list[list[list[float]]]:
 def demo_gps(rides: dict[str, pd.DataFrame]) -> dict:
     """Per demo filmed with GPS: its ride's route, and the position in each second of the clip (null where unknown)."""
     out = {}
-    for name, ride, start, _ in DEMOS:
+    for name, ride, start, *_ in DEMOS:
         if ride not in rides:
             continue
         t = rides[ride].set_index("second")
@@ -175,14 +185,72 @@ def exposure_data(rides: dict[str, pd.DataFrame]) -> dict:
             "event_names": EVENTS, "scenes": [[label, colour] for label, colour in SCENES.values()]}
 
 
-STYLE = """:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#deded9; --accent:#2b6cb0; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94;
-  --line:#33332f; --accent:#63a4e8; } }
+def demo_moments(ride: str, start: int, corpus: Path = CORPUS) -> list[tuple[float, str]]:
+    """What happens in a demo clip, from the ride's events.csv: (seconds into the clip, in words), in time order. A
+    close pass is said once, as the overtake it is."""
+    path = corpus / ride / "events.csv"
+    if not path.exists():
+        return []
+    ev = pd.read_csv(path)
+    ev = ev[(ev.t_start >= start) & (ev.t_start < start + DURATION_S)].sort_values("t_start")
+    close = set(ev.loc[ev.event == "close_pass_under_1p5m", "vehicle_id"].dropna())
+    words = {"vehicle_close_in_my_lane": "a vehicle close ahead in my lane", "oncoming_close_pass": "an oncoming vehicle passes close",
+             "stop_sign": "a stop sign"}
+    out = []
+    for e in ev.itertuples():
+        at = round(float(e.t_start) - start, 1)
+        if e.event == "overtaken_by_vehicle":
+            kind = "close pass" if e.vehicle_id in close else "overtaken"
+            out.append((at, f"{kind} on the {e.side}, {float(e.clearance_m):.2f} m to the side"))
+        elif e.event == "red_light_wait":
+            out.append((at, f"waits {float(e.duration_s):.0f} s at a red light"))
+        elif e.event in words:
+            out.append((at, words[e.event]))
+    return out
+
+
+def at_a_glance(corpus: Path = CORPUS, typology: Path = ROOT / "results" / "typology") -> list[tuple[str, str]]:
+    """The headline numbers of the rides, from the tables: (what, how much)."""
+    s = pd.read_csv(corpus / "corpus_summary.csv")
+    minutes = float(s.minutes.sum())
+    vehicles = int(s.vehicles_counted.sum())
+    rows = [("Filmed", f"{minutes:.0f} minutes on {len(s)} rides"),
+            ("Vehicles within 15 m", f"{vehicles:,}: {s.vehicles_parked.sum() / vehicles:.0%} parked, "
+                                     f"{s.vehicles_cross_side.sum() / vehicles:.0%} on side roads, "
+                                     f"{(s.vehicles_adjacent_same.sum() + s.vehicles_oncoming.sum()) / vehicles:.0%} "
+                                     f"sharing the road, {s.vehicles_ego_lane.sum() / vehicles:.0%} in the rider's lane"),
+            ("Overtakes", f"{int(s.events_overtaken_by_vehicle.sum())}, of them "
+                          f"{int(s.events_close_pass_under_1p5m.sum())} closer than 1.5 m"),
+            ("Beside parked cars in the door zone", f"{s.door_zone_seconds.sum() / 60 / minutes:.0%} of the time")]
+    if "events_red_light_wait" in s:
+        rows.append(("Waits at red lights", f"{int(s.events_red_light_wait.sum())}, "
+                                            f"{s.red_light_wait_seconds.sum() / 60:.0f} minutes in all"))
+    predictions = typology / "relation_lovo_predictions.csv"
+    if predictions.exists():
+        chosen = json.loads((typology / "evaluation_summary.json").read_text())["selected_model"]
+        p = pd.read_csv(predictions)
+        near = p[p.z_min <= 15]
+        rows.append(("Relation right", f"{(near[f'pred_{chosen}'] == near.label).mean():.0%} of {len(near)} labelled "
+                                       f"vehicles within 15 m, on rides the model was not trained on"))
+    return rows
+
+
+STYLE = """:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#66665f; --line:#deded9; --accent:#2b6cb0;
+  --on-accent:#fff; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39d;
+  --line:#33332f; --accent:#63a4e8; --on-accent:#0b1a2b; } }
 * { box-sizing:border-box; }
 body { margin:0; font:16px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
 a { color:var(--accent); } .muted { color:var(--muted); font-size:14px; }
-.button { display:inline-block; padding:7px 14px; border-radius:6px; background:var(--accent); color:#fff;
+.button { display:inline-block; padding:7px 14px; border-radius:6px; background:var(--accent); color:var(--on-accent);
   text-decoration:none; font-weight:600; }"""
+
+# The moments under a demo jump its video there.
+MOMENTS_JS = """
+document.querySelectorAll(".moment").forEach(b => b.onclick = () => {
+  const video = b.closest(".demo").querySelector("video");
+  video.currentTime = +b.dataset.t; video.play();
+});"""
 
 # The demo maps: a dot that follows the video along the clip's stretch of the route (blue), the rest of the ride grey.
 DEMO_MAP_JS = """
@@ -218,15 +286,21 @@ def index_page(gps: dict) -> str:
     legend = "".join(f'<span class="key"><i style="background:{hex_colour(RELATION_COLOURS_BGR[r])}"></i>'
                      f'{html.escape(RELATION_TEXT[r])}</span>' for r in RELATIONS)
 
-    def demo(name: str, ride: str, start: int, title: str) -> str:
+    glance = "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(v)}</td></tr>" for k, v in at_a_glance())
+
+    def demo(name: str, ride: str, start: int, title: str, look: str) -> str:
         where = (f'<div class="map" id="map-{name}"></div>' if name in gps else
                  '<div class="map nomap"><p class="muted">No GPS was recorded on this ride.</p></div>')
         hint = " &middot; the dot follows the video; click the blue line to jump there" if name in gps else ""
+        moments = "".join(f'<button class="moment" data-t="{max(0.0, t - 1):.1f}">{int(t) // 60}:{int(t) % 60:02d} '
+                          f'{html.escape(text)}</button>' for t, text in demo_moments(ride, start))
         return f'''
 <section class="demo" id="{name}">
   <h2>{html.escape(title)}</h2>
+  <p class="look">{html.escape(look)}</p>
   <div class="pair"><video controls playsinline preload="metadata" poster="demos/{name}.jpg" src="demos/{name}.mp4"></video>
   {where}</div>
+  {f'<div class="moments"><span class="muted">In this clip:</span> {moments}</div>' if moments else ""}
   <p class="muted">Ride {ride[-1]}, from {start // 60}:{start % 60:02d} &middot; {DURATION_S} s at the camera's full size and
   frame rate{hint} &middot; <a href="demos/{name}.mp4" download>download</a></p>
 </section>'''
@@ -248,7 +322,18 @@ h1 {{ font-size:28px; margin:0 0 6px; }} h2 {{ font-size:19px; margin:0 0 10px; 
 .cards {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:14px; margin:0 0 28px; }}
 .card {{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }}
 .card h2 {{ font-size:17px; }} .card p {{ margin:0 0 10px; }}
-.demo {{ margin:0 0 32px; }}
+.demo {{ margin:0 0 36px; }} .look {{ margin:0 0 10px; max-width:860px; }}
+.moments {{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:10px 0 4px; }}
+.moment {{ font:inherit; font-size:14px; color:inherit; background:var(--panel); border:1px solid var(--line);
+  border-radius:14px; padding:3px 10px; cursor:pointer; }}
+.moment:hover, .moment:focus-visible {{ border-color:var(--accent); outline:none; }}
+.two {{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:14px; margin:0 0 28px; }}
+@media (max-width:800px) {{ .two {{ grid-template-columns:1fr; }} }}
+table.glance {{ border-collapse:collapse; width:100%; font-size:15px; }}
+.glance th {{ text-align:left; font-weight:600; padding:4px 12px 4px 0; vertical-align:top; width:38%; }}
+.glance td {{ padding:4px 0; }} .glance tr + tr th, .glance tr + tr td {{ border-top:1px solid var(--line); }}
+.read ul {{ margin:0; padding-left:18px; }} .read li {{ margin:0 0 6px; }}
+.swatch {{ display:inline-block; width:22px; height:5px; border-radius:3px; vertical-align:3px; margin-right:4px; }}
 .pair {{ display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:12px; }}
 @media (max-width:800px) {{ .pair {{ grid-template-columns:1fr; }} .map {{ aspect-ratio:4/3; }} }}
 video {{ width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; display:block; }}
@@ -261,6 +346,21 @@ video {{ width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; disp
 <p class="lead">From a handlebar camera, every vehicle around the rider and how it relates to the rider, with the
 riding context, traffic signals, signs (typed and read) and licence plates. Box colours:</p>
 <div class="keys">{legend}</div>
+<div class="two">
+  <div class="card"><h2>At a glance</h2><table class="glance">{glance}</table>
+  <p class="muted">Relations are checked against labels from AI-assisted review that a person has yet to check;
+  distances read low against the GPS. <a href="{REPO}/blob/main/docs/TYPOLOGY_PIPELINE.md#known-limitations">Limitations</a></p></div>
+  <div class="card read"><h2>Reading the overlay</h2><ul>
+  <li><b>Boxes</b> in the colour of the vehicle's relation, labelled with it and how far ahead it is ("same way 9m");
+  "?" when the model is unsure. Vehicles beyond 25 m get a thin box and no label.</li>
+  <li><b>Lane lines</b> found in the road paint: <span class="swatch" style="background:#e8e8e8"></span>white,
+  <span class="swatch" style="background:#ffdc00"></span>yellow, and <span class="swatch" style="background:#50e650"></span>green
+  beside the rider when the rider is in a bike lane.</li>
+  <li><b>Signals</b> boxed in the lamp's colour ("signal red"); <b>signs</b> with their type or what they say (street
+  names, parking hours, "SPEED LIMIT 35"); <b>plates</b> boxed in yellow with the text read.</li>
+  <li><b>Top bar</b>: time into the ride, the riding context (most common over 7 s), the rider's speed (from the GPS
+  where the ride has it), the signal ahead and the posted limit.</li></ul></div>
+</div>
 <div class="cards">
   {"" if not gps else """<div class="card"><h2>Exposure map</h2><p>Where along the rides the rider met traffic, parked
   cars and close passes, from the detections and the GPS tracks.</p><a class="button" href="map/">Open the map</a></div>"""}
@@ -272,7 +372,8 @@ riding context, traffic signals, signs (typed and read) and licence plates. Box 
   <div class="card"><h2>Code and results</h2><p>Per-ride tables, accuracy and limitations, and the pipeline.</p>
   <a class="button" href="{REPO}">GitHub</a></div>
 </div>{"".join(demo(*d) for d in DEMOS)}
-</main>{maps}</body></html>
+</main>{maps}<script>{MOMENTS_JS}
+</script></body></html>
 '''
 
 

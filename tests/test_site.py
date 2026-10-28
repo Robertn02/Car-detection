@@ -21,7 +21,7 @@ def test_routes_break_where_positions_are_hidden():
 
 
 def test_a_demo_gets_the_position_of_every_second_of_its_clip():
-    name, ride, start, _ = DEMOS[0]
+    name, ride, start, *_ = DEMOS[0]
     seconds = np.arange(start - 10, start + DURATION_S + 10)
     t = pd.DataFrame({"second": seconds, "lat": 34.0 + seconds * 1e-5, "lon": -118.0})
     t.loc[t.second == start + 3, ["lat", "lon"]] = np.nan  # hidden (privacy zone)
@@ -41,3 +41,31 @@ def test_the_exposure_map_has_only_placed_seconds_with_their_counts(tmp_path, mo
     traffic = 4 + list(HEAT).index("traffic")
     assert [p[traffic] for p in data["points"]] == [3.0, 3.0]
     assert data["routes"][0]["label"].startswith("Ride 6")
+
+
+def test_a_demo_lists_what_happens_in_it_once_per_vehicle(tmp_path):
+    ride = tmp_path / "VID_X_001"
+    ride.mkdir()
+    pd.DataFrame([
+        {"event": "overtaken_by_vehicle", "vehicle_id": 1, "t_start": 610.0, "clearance_m": 1.16, "side": "left"},
+        {"event": "close_pass_under_1p5m", "vehicle_id": 1, "t_start": 610.0, "clearance_m": 1.16, "side": "left"},
+        {"event": "overtaken_by_vehicle", "vehicle_id": 2, "t_start": 630.0, "clearance_m": 2.9, "side": "right"},
+        {"event": "red_light_wait", "t_start": 640.0, "duration_s": 12.0},
+        {"event": "crossing_traffic_near", "vehicle_id": 3, "t_start": 645.0},  # too common to list
+        {"event": "stop_sign", "t_start": 700.0}]).to_csv(ride / "events.csv", index=False)  # after the clip
+    moments = build_site.demo_moments("VID_X_001", 600, corpus=tmp_path)
+    assert moments == [(10.0, "close pass on the left, 1.16 m to the side"),
+                       (30.0, "overtaken on the right, 2.90 m to the side"), (40.0, "waits 12 s at a red light")]
+
+
+def test_the_headline_numbers_add_up_the_rides(tmp_path):
+    pd.DataFrame({"minutes": [10.0, 20.0], "vehicles_counted": [100, 300], "vehicles_parked": [60, 220],
+                  "vehicles_cross_side": [20, 40], "vehicles_adjacent_same": [10, 20], "vehicles_oncoming": [5, 10],
+                  "vehicles_ego_lane": [5, 10], "events_overtaken_by_vehicle": [3, 4],
+                  "events_close_pass_under_1p5m": [1, 2], "door_zone_seconds": [60, 300],
+                  "events_red_light_wait": [2, 3], "red_light_wait_seconds": [60, 120]}).to_csv(
+        tmp_path / "corpus_summary.csv", index=False)
+    rows = dict(build_site.at_a_glance(corpus=tmp_path, typology=tmp_path / "none"))
+    assert rows["Filmed"] == "30 minutes on 2 rides" and rows["Overtakes"] == "7, of them 3 closer than 1.5 m"
+    assert rows["Vehicles within 15 m"].startswith("400: 70% parked") and rows["Waits at red lights"] == "5, 3 minutes in all"
+    assert rows["Beside parked cars in the door zone"] == "20% of the time" and "Relation right" not in rows
