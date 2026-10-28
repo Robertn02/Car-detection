@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exposure map</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+:root { --panel:rgba(22,22,21,0.92); --ink:#ececea; --muted:#a3a39d; --line:#3a3a36; --accent:#63a4e8; }
+* { box-sizing:border-box; }
+html, body { margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 system-ui, sans-serif; }
+#map { position:absolute; inset:0; background:#0e0e0d; }
+#map .leaflet-tile-pane { filter:invert(1) grayscale(1) brightness(0.75) contrast(1.1); }
+.panel { position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-width:calc(100% - 24px);
+  max-height:calc(100% - 24px); overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px; }
+.panel h1 { font-size:18px; margin:0 0 4px; } .panel p { margin:6px 0; }
+.muted { color:var(--muted); font-size:13px; } a { color:var(--accent); }
+.panel label { display:block; padding:3px 0; cursor:pointer; }
+select { font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(--line); border-radius:6px; padding:4px 8px;
+  width:100%; }
+.swatch { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+.swatch.dot { border-radius:50%; }
+.ramp { height:10px; border-radius:5px; margin:6px 0 2px;
+  background:linear-gradient(90deg, #2c1a6e, #b3206e, #f05a28, #fbb33b, #fffbe6); }
+@media (max-width:600px) { .panel { top:auto; bottom:12px; max-height:45%; } }
+</style></head><body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Exposure map</h1>
+  <p class="muted">Each second of the rides placed by its GPS track, with what the camera saw then. Each ride's
+  start and end are left out, within 400 to 800 m of them.</p>
+  <div id="layers"></div>
+  <p><select id="ride" aria-label="Ride"><option value="-1">All rides</option></select></p>
+  <label><input type="checkbox" id="events" checked> Close passes and overtakes</label>
+  <div id="legend"></div>
+  <p class="muted"><a href="../">Back to the demos</a></p>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_CREDIT = "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors";
+const HEAT_RAMP = ["#2c1a6e", "#b3206e", "#f05a28", "#fbb33b", "#fffbe6"];
+const $ = s => document.querySelector(s);
+const map = L.map("map", {preferCanvas: true});
+L.tileLayer(TILE_URL, {attribution: TILE_CREDIT, maxZoom: 19}).addTo(map);
+const EVENT_COLOURS = {close_pass_under_1p5m: "#ff4d4f", oncoming_close_pass: "#d36bff",
+  vehicle_close_in_my_lane: "#ffd60a", overtaken_by_vehicle: "#f2f2f2"};  // apart from the riding-context colours
+const CELL_M = 20, LEVELS = 32;
+const ramp = f => {  // the colour a fraction f of the way along HEAT_RAMP
+  const x = f * (HEAT_RAMP.length - 1), i = Math.min(HEAT_RAMP.length - 2, Math.floor(x)), t = x - i;
+  const rgb = h => [1, 3, 5].map(o => parseInt(h.slice(o, o + 2), 16)), a = rgb(HEAT_RAMP[i]), b = rgb(HEAT_RAMP[i + 1]);
+  return `rgb(${a.map((v, c) => Math.round(v + (b[c] - v) * t)).join(",")})`;
+};
+const joined = (p, last) => last && p[2] === last[2] && map.distance([p[0], p[1]], [last[0], last[1]]) <= 60;
+fetch("exposure.json").then(r => r.json()).then(data => {
+  const layers = [...data.heat.map(h => [h.key, h.label]), ["context", "Riding context"]];
+  $("#layers").innerHTML = layers.map(([k, label], i) =>
+    `<label><input type="radio" name="layer" value="${k}" ${i ? "" : "checked"}> ${label}</label>`).join("");
+  data.routes.forEach((r, i) => $("#ride").insertAdjacentHTML("beforeend", `<option value="${i}">${r.label}</option>`));
+  L.layerGroup(data.routes.flatMap(r => r.lines.map(line => L.polyline(line, {color: "#5a5a55", weight: 2, opacity: 0.6})))).addTo(map);
+  const ridePoints = () => { const ride = +$("#ride").value; return data.points.filter(p => ride < 0 || p[2] === ride); };
+  map.fitBounds(L.latLngBounds(data.points.map(p => [p[0], p[1]])).pad(0.05));
+  let shown = L.layerGroup().addTo(map);
+  const events = L.layerGroup().addTo(map);
+  const draw = () => {
+    const layer = document.querySelector("input[name=layer]:checked").value, ride = +$("#ride").value, pts = ridePoints();
+    shown.remove();
+    events.clearLayers();
+    if (layer === "context") {  // runs of seconds in one riding context, as coloured lines
+      shown = L.layerGroup();
+      let run = [], last = null;
+      const flush = () => { if (run.length > 1) L.polyline(run, {color: data.scenes[last[3]][1], weight: 4, opacity: 0.9}).addTo(shown); run = []; };
+      for (const p of pts) {
+        const gap = last && !joined(p, last);
+        if (last && (gap || p[3] !== last[3])) { const prev = last; flush(); if (!gap) run.push([prev[0], prev[1]]); }
+        if (p[3] >= 0) run.push([p[0], p[1]]);
+        last = p;
+      }
+      flush();
+      $("#legend").innerHTML = data.scenes.map(([label, colour]) =>
+        `<div><span class="swatch" style="background:${colour}"></span>${label}</div>`).join("");
+    } else {
+      const k = 4 + data.heat.findIndex(h => h.key === layer);
+      const dLat = CELL_M / 111320, dLon = dLat / Math.cos(pts[0][0] * Math.PI / 180), sums = new Map();
+      const cell = p => [Math.round(p[0] / dLat), Math.round(p[1] / dLon)];
+      for (const p of pts) { const key = cell(p).join(); sums.set(key, (sums.get(key) || 0) + p[k]); }
+      const near = pts.map(p => {  // the counts in this cell and the 8 round it
+        const [i, j] = cell(p);
+        let sum = 0;
+        for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) sum += sums.get(`${i + a},${j + b}`) || 0;
+        return sum;
+      });
+      const lit = near.filter(v => v > 0).sort((a, b) => a - b), top = lit.length ? lit[Math.floor(0.98 * (lit.length - 1))] : 1;
+      shown = L.layerGroup();
+      let run = [], level = -1;
+      const flush = () => {  // stretches with none are left to the grey route
+        if (run.length > 1 && level >= 0) L.polyline(run, {color: ramp(level / (LEVELS - 1)), weight: 3, opacity: 1}).addTo(shown);
+      };
+      pts.forEach((p, n) => {  // runs of seconds at one level; a second's stretch starts at the second before
+        const l = near[n] > 0 ? Math.min(LEVELS - 1, Math.floor(Math.sqrt(near[n] / top) * LEVELS)) : -1;
+        const linked = joined(p, pts[n - 1]);
+        if (!linked || l !== level) { flush(); run = linked ? [[pts[n - 1][0], pts[n - 1][1]]] : []; level = l; }
+        run.push([p[0], p[1]]);
+      });
+      flush();
+      const seconds = pts.filter(p => p[k] > 0).length;
+      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer, near that
+        spot - a wait at a red light adds up. ${seconds} of ${pts.length} seconds had any.</p>`;
+    }
+    shown.addTo(map);
+    if ($("#events").checked) {
+      for (const e of data.events.filter(e => ride < 0 || e[3] === ride)) {
+        L.circleMarker([e[0], e[1]], {radius: 5, color: "#111", weight: 1, fillColor: EVENT_COLOURS[e[2]] || "#fff", fillOpacity: 0.95})
+          .bindPopup(`<b>${data.event_names[e[2]]}</b>${e[5] !== null ? ` - ${e[5]} m` : ""}<br>${data.routes[e[3]].label}, ${e[4]}`)
+          .addTo(events);
+      }
+      $("#legend").insertAdjacentHTML("beforeend", Object.entries(data.event_names).map(([k, label]) =>
+        `<div class="muted"><span class="swatch dot" style="background:${EVENT_COLOURS[k]}"></span>${label}</div>`).join(""));
+    }
+  };
+  document.querySelectorAll("input[name=layer]").forEach(r => r.onchange = draw);
+  $("#events").onchange = draw;
+  $("#ride").onchange = () => { draw(); const pts = ridePoints(); if (pts.length) map.fitBounds(L.latLngBounds(pts.map(p => [p[0], p[1]])).pad(0.05)); };
+  draw();
+});
+</script></body></html>
