@@ -19,3 +19,6 @@ mobileclip*.ts
 
 # Overlay clips are published on the gh-pages branch (scripts/build_site.py); only their posters are kept here
 demos/*.mp4
+
+# Licence plates as a reviewer typed them stay on this machine (the clips and review page show plates, not a list)
+data/typology/plate_labels.csv

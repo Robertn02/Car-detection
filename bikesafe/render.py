@@ -9,15 +9,17 @@ by the detector (car + truck) is drawn once, in the colour of its vehicle-level 
 Lane lines and road furniture are measured on sampled frames (2 per second). In between, a sign's box is
 interpolated from the samples before and after. A lane line found on two of three consecutive samples is predicted
 for every frame from the samples around it, then laid on the paint of that frame (LaneOverlay): the handlebar camera
-rolls and pitches between samples, so a line drawn from the samples alone drifts off its paint. Lines with no paint
-under them in the frame (a crack or seam the segmenter took for paint) fade out, as do lines at a junction's
-crosswalk; lines are drawn as strips of road paint in perspective, no further ahead than their paint was seen, and
-behind the vehicles.
+rolls and pitches between samples, so a line drawn from the samples alone drifts off its paint. Only the lines of the
+rider's own lane are drawn - the nearest on each side - and only on steady lane structure: none through a junction
+(crosswalk, turn paint), a turn or a stretch where the lines are lost, and none until the lanes have been steady for
+a moment after. Lines with no paint under them in the frame (a crack or seam the segmenter took for paint) fade out;
+lines are drawn as strips of road paint in perspective, no further ahead than their paint was seen, and behind the
+vehicles.
 
 Labels are short ("same way", "side road": the legend gives the colours in full) and placed so they do not cover
 one another. The banner's riding context is the most common one over SCENE_SMOOTH_S around the moment, so it does
 not flip with every second's call (timeline_1s.csv keeps the per-second call). Its speed is the GPS speed where the
-ride has a GPS track (bikesafe.gps; the speed measured from the video reads about 0.6 of it), else the video's.
+ride has a GPS track (bikesafe.gps), else the video's (calibrated against the GPS of the other rides).
 
 The clip has every frame of the video at its full size (--width to shrink it). Vehicles are detected on every second
 frame (bikesafe.perceive --target-fps), so their boxes are interpolated on the frames in between. It is written as
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -53,7 +56,7 @@ SIGN_NAMES = {"parking": "parking", "no_turn": "no turn", "one_way": "one way", 
               "guide": "guide", "street_name": "street", "other_sign": "sign", "yield": "YIELD", "stop": "STOP",
               "roadwork": "road work", "bus_stop": "bus stop"}
 LANE_COLOURS_BGR = {"bike": (80, 230, 80), "solid": (255, 255, 255), "broken": (180, 180, 180), "yellow": (0, 220, 255)}
-LABEL_MAX_Z = 25.0  # m; farther vehicles get a thin box and no label (relations are validated within 15 m)
+LABEL_MAX_Z = 40.0  # m; farther vehicles get a thin box and no label (relations are validated within 25 m)
 UNSURE_CONFIDENCE = 0.45  # a relation the model gives less than this probability is labelled with a "?"
 MAX_BOX_GAP = 2  # processed frames (1/6 s at 12 fps) a track's box is carried across when the detector misses it
 SAMPLE_HOLD_S = 0.3  # draw an object or line on frames up to this far from the last sample that saw it
@@ -70,11 +73,35 @@ SNAP_SEARCH_M = 0.3  # paint is looked for this far either side of the predicted
 SNAP_ROWS = 28  # image rows looked at along a line
 SNAP_MIN_POINTS = 5  # rows that must find paint for the frame to place the line
 SNAP_MIN_CONTRAST, SNAP_CONTRAST_SHARE = 8.0, 0.15  # paint stands this far above the asphalt (grey levels, share)
-SNAP_GAIN = 0.5  # weight of a frame's measurement against the line's running estimate
-SUPPORT_DECAY = 0.85  # per frame; a line is shown while its share of frames with paint found stays above SHOW_SUPPORT
-SHOW_SUPPORT = 0.4
-KEEP_S = 0.8  # a line followed on its paint stays this long after the samples stop reporting it
-FADE_S = 0.25  # lines fade in and out over this long
+SNAP_GAIN, LOCK_GAIN, LOCK_FRAMES = 0.35, 0.7, 3  # weight of the paint's fit against the line's running estimate
+PREDICTION_PULL = 0.05  # per frame without paint found, towards the samples' prediction
+HISTORY_FRAMES, HISTORY_WEIGHT = 6, 0.75  # the paint of this many recent frames is fitted, older frames weighing less
+MIN_COVER = 0.25  # share of the rows looked at, over those frames, that must find paint (a seam or faded edge finds few)
+HELD_COVER = 0.5  # paint under this share of the rows that can be seen keeps a line's support, though too few rows
+# can be seen to fit it (parked cars hide most of it)
+MATCH_M = 0.4  # a line the samples report within this of a followed line (m, across the road) is that line
+DUPLICATE_LINE_M = 0.25  # two followed lines this close are one
+SUPPORT_DECAY = 0.92  # per frame: a line's support is the recent share of frames with paint found under it
+SHOW_SUPPORT, HIDE_SUPPORT = 0.45, 0.12  # a line appears above the first and goes below the second
+KEEP_S, KEEP_MAX_S = 1.0, 2.5  # after the samples stop reporting a line, it stays this long - up to the second while
+# its paint is still found under it
+FADE_S = 0.3  # lines fade in and out over this long
+EXTENT_GAIN = 0.15  # per frame: how fast a line's far end follows the samples (their extent jumps sample to sample)
+# Which lines are shown, and when: the rider's own lane, on steady lane structure
+MIN_AGE_S = 0.5  # a line is followed this long before it can show (a seam reported once never does)
+JUNCTION_PAD_S = 0.6  # lines are hidden from this long before a junction sample to this long after it
+TURN_DEG_S, TURN_WINDOW_S = 12.0, 1.5  # the heading turning faster than this, over the window: a turn
+LOST_S = 0.75  # no sample within this long reports a line beside the rider: the lane structure is lost
+RESUME_S = 1.5  # after a junction, a turn or lost lines, lines show again once the lanes have been steady this long
+GATE_STEP_S = 0.1  # time step the gate is worked out on
+MIN_LANE_M = 1.3  # the rider's lane is at least this wide: a line nearer the other side's is paint inside the lane
+# (an arrow's shaft, a bike symbol, a seam in the asphalt)
+LONE_MIN_X = 0.45  # with nothing on the other side, a line this near the rider's path is taken for such paint too
+MIN_SIDE_X = 0.5  # nor is a line this near the rider's path a side of the lane at all: the rider rarely rides along a
+# lane line, and what lies there is mostly the glare of the bike's own light at night, an arrow or a seam
+SIDE_MARGIN_M = 0.15  # a shown line keeps its place this far past those limits (its position wavers a little)
+JUNCTION_BAR_M = 5.0  # JUNCTION_LINES or more lines this short (median) at once are crosswalk bars; long ones are a
+# buffered bike lane's double lines
 
 
 def draw_legend(frame: np.ndarray, lanes: bool = True) -> None:
@@ -127,6 +154,18 @@ def project_line(x0: float, shear: float, u_foe: float, calib: dict, z_range: tu
 # lane lines: matched across samples, smoothed, interpolated
 
 
+def junction_paint(n_lines: int, crosswalk_share: float, lines_json: str) -> bool:
+    """Whether a sample sees a junction's paint rather than lane structure: a crosswalk across the rider's corridor,
+    or JUNCTION_LINES or more short lines (crosswalk bars, turn paint). A buffered bike lane also has that many
+    lines, but long ones."""
+    if crosswalk_share >= JUNCTION_CROSSWALK:
+        return True
+    if n_lines < JUNCTION_LINES:
+        return False
+    extents = line_extents(lines_json)
+    return bool(extents) and float(np.median([far - near for near, far in extents])) < JUNCTION_BAR_M
+
+
 def lane_line_tracks(lanes: pd.DataFrame, calib: dict | None = None) -> pd.DataFrame:
     """One row per line per sample with a line id that follows the same painted line from sample to sample, its
     position and slant smoothed over the neighbouring samples, and whether it is confirmed (found on at least two of
@@ -137,7 +176,7 @@ def lane_line_tracks(lanes: pd.DataFrame, calib: dict | None = None) -> pd.DataF
     position relative to the image centre column, which does not move with that estimate (needs `calib`)."""
     rows, next_id, previous = [], 0, []
     for i, sample in enumerate(lanes.itertuples()):
-        junction = sample.n_lines >= JUNCTION_LINES or getattr(sample, "crosswalk_share", 0.0) >= JUNCTION_CROSSWALK
+        junction = junction_paint(sample.n_lines, getattr(sample, "crosswalk_share", 0.0), sample.lines_json)
         offset = 0.0
         if calib is not None:
             rows_at_ref = calib["focal_px"] * calib["cam_height_m"] / REF_Z
@@ -258,16 +297,15 @@ def draw_lane_lines(image: np.ndarray, lines: list[dict], u_foe: float, calib: d
     np.copyto(image, layer, where=(drawn > 0)[..., None])
 
 
-def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
-               lateral_h: float, boxes: np.ndarray, contrast: float) -> tuple[float, float, float] | None:
-    """The image line u = a + b*d (d: rows below the horizon) moved onto the paint near it in this frame.
-
-    Along the predicted line, each sampled row is searched SNAP_SEARCH_M either side for a stripe brighter than the
-    asphalt beside it by `contrast`, about as wide as lane paint at that distance (a kerb, a white car or a sunlit
-    patch is wider). A straight line through the stripes found, robust to strays, is the line in this frame; it is
-    returned as (a, b, lowest row found below the horizon), or None when too few rows found paint."""
+def find_stripes(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
+                 lateral_h: float, boxes: np.ndarray, contrast: float,
+                 looked: list[int] | None = None) -> list[tuple[float, float, float]]:
+    """Paint along the image line u = a + b*d (d: rows below the horizon) in this frame: (d, u, contrast) of every
+    sampled row where a stripe brighter than the asphalt beside it by `contrast` lies within SNAP_SEARCH_M of the
+    line, about as wide as lane paint at that distance (a kerb, a white car or a sunlit patch is wider). `looked`, if
+    given, gets the number of rows that could be looked at (in the picture and not behind a vehicle)."""
     height, width = bright.shape
-    found = []
+    found, visible = [], 0
     for d in np.linspace(d_range[0], d_range[1], SNAP_ROWS):
         v = int(round(horizon + d))
         if v < 1 or v >= height - 1:
@@ -286,6 +324,7 @@ def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, flo
         inside = np.flatnonzero(np.abs(np.arange(lo, hi) - u) <= reach)
         if not len(inside):
             continue
+        visible += 1
         i = int(inside[np.argmax(profile[inside])])
         rise = profile[i] - background
         if rise < contrast:
@@ -298,90 +337,222 @@ def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, flo
             right += 1
         if not 0.3 * paint_px <= right - left + 1 <= 3 * paint_px + 3:
             continue
-        found.append((d, lo + (left + right) / 2, rise))
-    if len(found) < SNAP_MIN_POINTS:
+        found.append((float(d), lo + (left + right) / 2, float(rise)))
+    if looked is not None:
+        looked.append(visible)
+    return found
+
+
+def fit_stripes(points: list[tuple[float, float, float]], span: float, lateral_h: float) -> tuple[float, float, float] | None:
+    """A straight image line through stripes (d, u, weight), robust to strays: (a, b, lowest row it covers), or None
+    when fewer than SNAP_MIN_POINTS rows agree or they cover less than a quarter of `span` rows."""
+    if len(points) < SNAP_MIN_POINTS:
         return None
-    ds, us, weights = (np.array(c, float) for c in zip(*found))
+    ds, us, weights = (np.array(c, float) for c in zip(*points))
     keep = np.ones(len(ds), bool)
     fit_a = fit_b = 0.0
     for _ in range(2):  # fit, drop the rows far off the fit, fit again
+        if keep.sum() < SNAP_MIN_POINTS or np.ptp(ds[keep]) < 0.25 * span:
+            return None  # too few rows agree, or all in one short stretch: not enough to set the line's slant
         fit_b, fit_a = np.polyfit(ds[keep], us[keep], 1, w=weights[keep])
         keep = np.abs(us - (fit_a + fit_b * ds)) <= 0.08 * ds / lateral_h + 3
-        if keep.sum() < SNAP_MIN_POINTS:
-            return None
-    if np.ptp(ds[keep]) < 0.25 * (d_range[1] - d_range[0]):
-        return None  # all in one short stretch: not enough to set the line's slant
+    if keep.sum() < SNAP_MIN_POINTS or np.ptp(ds[keep]) < 0.25 * span:
+        return None
     return float(fit_a), float(fit_b), float(ds[keep].max())
 
 
+def find_paint(bright: np.ndarray, a: float, b: float, d_range: tuple[float, float], horizon: float,
+               lateral_h: float, boxes: np.ndarray, contrast: float) -> tuple[float, float, float] | None:
+    """The image line u = a + b*d moved onto the paint near it in this frame alone: (a, b, lowest row), or None."""
+    stripes = find_stripes(bright, a, b, d_range, horizon, lateral_h, boxes, contrast)
+    return fit_stripes([(d, u, w) for d, u, w in stripes], d_range[1] - d_range[0], lateral_h)
+
+
 class LaneOverlay:
-    """The lane lines of each frame of a clip, predicted from the samples around it (lines_near) and laid on the
-    paint of the frame (find_paint).
+    """The lane lines of the rider's lane on each frame of a clip, predicted from the samples around it (lines_near)
+    and laid on the paint of the frame (find_stripes).
 
     Each line is followed as an image line u = a + b*d (d = rows below the horizon), which is what a straight line on
-    a flat road looks like. Its estimate starts from the samples' prediction, is moved part of the way to where this
-    frame shows its paint, and is pulled back gently towards the prediction, so it neither jitters with the frame nor
-    wanders off with it. A line is shown while paint is found under it in most recent frames, kept for KEEP_S after
-    the samples stop reporting it as long as its paint is still there, and faded in and out."""
+    a flat road looks like, and keeps one identity for as long as it is seen: a line the samples report is matched
+    to a followed line by where it is in the picture (within MATCH_M), not by the samples' own numbering, which
+    restarts whenever one sample misses it. Its paint is looked for along it in every frame and the stripes of the
+    last HISTORY_FRAMES frames are fitted together - the line stays put in the picture as the rider moves along it,
+    while the dashes of a broken line slide along it, so a few frames together cover it where one frame finds only a
+    dash or two. The fit moves the line part of the way (SNAP_GAIN; quicker while it first appears); only when no paint
+    is found is it pulled, gently, towards the samples' prediction. A line appears once paint is found under it in
+    most recent frames (SHOW_SUPPORT) and goes only when that falls well below (HIDE_SUPPORT), at a junction, or
+    KEEP_S after the samples stop reporting it, fading in and out; two lines that settle on one paint stripe are
+    merged.
 
-    def __init__(self, lanes: pd.DataFrame, calib: dict, fps: float) -> None:
+    Of the lines followed, only the nearest on each side of the rider shows (the rider's lane: a farther line does
+    not stand in while the nearer one is faint), once it has been followed for MIN_AGE_S. All lines go at a junction
+    (from JUNCTION_PAD_S before its first sample to after its last), in a turn (the rider's heading, from `ego`,
+    turning faster than TURN_DEG_S) and where no sample reports a line beside the rider for LOST_S; they come back
+    only once none of these has held for RESUME_S, and fade in."""
+
+    def __init__(self, lanes: pd.DataFrame, calib: dict, fps: float, ego: pd.DataFrame | None = None) -> None:
         self.lanes, self.calib, self.fps = lanes, calib, fps
         self.tracks = lane_line_tracks(lanes, calib)
         self.fh = calib["focal_px"] * calib["cam_height_m"]
         self.lateral_h = calib["lateral_height_m"]
         self.horizon = calib["horizon_v"]
         self.state: dict[int, dict] = {}
+        self.next_id = 0
+        self.grid, self.calm = self.steady_lanes(ego)
+
+    def steady_lanes(self, ego: pd.DataFrame | None) -> tuple[np.ndarray, np.ndarray]:
+        """A time grid over the samples and, at each point, how long the lane structure has been steady: no junction,
+        no turn, lines reported beside the rider (0 where one of these fails; inf when none has since the start)."""
+        lanes = self.lanes
+        if lanes.empty:
+            return np.zeros(0), np.zeros(0)
+        times = lanes.time_s.to_numpy(float)
+        grid = np.arange(times[0], times[-1] + GATE_STEP_S / 2, GATE_STEP_S)
+        crosswalk = lanes["crosswalk_share"].to_numpy(float) if "crosswalk_share" in lanes else np.zeros(len(lanes))
+        junction = np.array([junction_paint(n, c, j) for n, c, j in zip(lanes.n_lines, crosswalk, lanes.lines_json)], bool)
+        blocked = np.zeros(len(grid), bool)
+        for t in times[junction]:
+            blocked |= np.abs(grid - t) <= JUNCTION_PAD_S
+        tracks = self.tracks
+        beside = tracks[tracks.confirmed & ~tracks.junction & (tracks.x.abs() <= MAX_LINE_X)]["sample"].unique()
+        lined = np.sort(times[beside.astype(int)])
+        if len(lined):
+            after = np.clip(np.searchsorted(lined, grid), 0, len(lined) - 1)
+            before = np.clip(after - 1, 0, len(lined) - 1)
+            blocked |= np.minimum(np.abs(grid - lined[before]), np.abs(lined[after] - grid)) > LOST_S
+        else:
+            blocked[:] = True
+        if ego is not None and len(ego):
+            heading = np.degrees(ego.turn_rad.to_numpy(float))
+            et, half = ego.time_s.to_numpy(float), TURN_WINDOW_S / 2
+            rate = np.abs(np.interp(grid + half, et, heading) - np.interp(grid - half, et, heading)) / TURN_WINDOW_S
+            blocked |= rate > TURN_DEG_S
+        calm, last = np.empty(len(grid)), -np.inf
+        for k, (t, b) in enumerate(zip(grid, blocked)):
+            last = t if b else last
+            calm[k] = t - last
+        return grid, calm
+
+    def calm_s(self, t: float) -> float:
+        """How long the lane structure has been steady at time t (inf before the samples start)."""
+        k = int(np.searchsorted(self.grid, t, side="right")) - 1
+        if k < 0:
+            return float("inf")
+        return float(self.calm[k]) + (t - float(self.grid[k]) if self.calm[k] > 0 else 0.0)
 
     def image_line(self, x: float, shear: float, u_foe: float) -> tuple[float, float]:
         """(a, b) of the metric line X(Z) = x + shear*(Z - REF_Z) seen from the heading u_foe (as project_line)."""
         return u_foe + shear * self.fh / self.lateral_h, (x - shear * REF_Z) / self.lateral_h
 
+    def apart_m(self, ab1: np.ndarray, ab2: np.ndarray, d: float) -> float:
+        """How far apart two image lines are on the road at row d below the horizon (m)."""
+        return abs((ab1[0] + ab1[1] * d) - (ab2[0] + ab2[1] * d)) * self.lateral_h / max(d, 1.0)
+
+    def follow(self, prediction: np.ndarray, d_mid: float, taken: set[int]) -> int | None:
+        """The followed line a line the samples report is, if one lies within MATCH_M of it."""
+        near = [(self.apart_m(st["ab"], prediction, d_mid), key) for key, st in self.state.items() if key not in taken]
+        near = [(apart, key) for apart, key in near if apart < MATCH_M]
+        return min(near)[1] if near else None
+
     def update(self, image: np.ndarray, frame: int, boxes: np.ndarray) -> list[dict]:
         """Lines to draw on this frame, each with its image line, rows and opacity."""
-        lines, u_foe, junction = lines_near(frame / self.fps, self.lanes, self.tracks, self.calib)
+        t = frame / self.fps
+        lines, u_foe, junction = lines_near(t, self.lanes, self.tracks, self.calib)
+        calm = self.calm_s(t)
+        blocked, steady = calm <= 0.0, calm >= RESUME_S
         bright = (image[..., 1].astype(np.float32) + image[..., 2]) / 2  # green + red: white and yellow paint both
         road = bright[int(self.horizon) + 20:]
         contrast = max(SNAP_MIN_CONTRAST, SNAP_CONTRAST_SHARE * float(np.median(road))) if road.size else SNAP_MIN_CONTRAST
         bottom = image.shape[0] - self.horizon - 2
-        seen = set()
+        taken: set[int] = set()
         for line in lines:
             assert u_foe is not None
-            lid = line["line_id"]
-            seen.add(lid)
             prediction = np.array(self.image_line(line["x"], line["shear"], u_foe))
-            st = self.state.get(lid)
-            if st is None or frame - st["frame"] > 2:
-                st = self.state[lid] = {"ab": prediction, "support": 0.5, "alpha": 0.0, "frame": frame}
-            else:  # its own estimate, held near the samples' prediction
-                st["ab"] = 0.85 * st["ab"] + 0.15 * prediction
             z1 = min(LINE_Z_MAX, line["z_far"])
             z0 = 2.5 if z1 - line["z_near"] >= EXTEND_M else max(2.5, line["z_near"])
-            st.update(x=line["x"], solid=line["solid"], yellow=line["yellow"], sample_frame=frame,
-                      d_far=self.fh / z1, d_near=self.fh / z0)
+            d_far, d_near = self.fh / z1, self.fh / z0
+            key = self.follow(prediction, (d_far + d_near) / 2, taken)
+            if key is None:
+                key, self.next_id = self.next_id, self.next_id + 1
+                self.state[key] = {"ab": prediction, "support": 0.3, "alpha": 0.0, "measured": 0, "d_far": d_far,
+                                   "d_near_sample": d_near, "stripes": deque(maxlen=HISTORY_FRAMES),
+                                   "lowest": deque(maxlen=max(1, int(self.fps))), "born": frame,
+                                   "looked": deque(maxlen=HISTORY_FRAMES), "cover": 0.0}
+            taken.add(key)
+            st = self.state[key]
+            st.update(x=line["x"], solid=line["solid"], yellow=line["yellow"], sample_frame=frame, prediction=prediction)
+            # the ends ease towards the samples' extent instead of jumping with it
+            st["d_far"] += EXTENT_GAIN * (d_far - st["d_far"])
+            st["d_near_sample"] += EXTENT_GAIN * (d_near - st["d_near_sample"])
         step = 1.0 / max(1.0, FADE_S * self.fps)
-        for lid, st in list(self.state.items()):
-            if junction or (lid not in seen and frame - st["sample_frame"] > KEEP_S * self.fps):
-                st["support"] = 0.0  # at a junction, or no longer reported: fade out
-            elif st["d_near"] - st["d_far"] > 10:
-                found = find_paint(bright, float(st["ab"][0]), float(st["ab"][1]), (st["d_far"], bottom),
-                                   self.horizon, self.lateral_h, boxes, contrast)
-                if found is not None:
-                    st["ab"] = st["ab"] + SNAP_GAIN * (np.array(found[:2]) - st["ab"])
-                    st["d_near"] = max(st["d_near"], min(found[2], bottom))
-                st["support"] = SUPPORT_DECAY * st["support"] + (1 - SUPPORT_DECAY) * (found is not None)
-            target = 1.0 if st["support"] >= SHOW_SUPPORT else 0.0
+        sides = self.lane_sides(frame)
+        # a line taking a side over from another waits until that one has faded: never three lines at once
+        fading = {bool(st["ab"][1] < 0) for key, st in self.state.items() if st["alpha"] > 0 and key not in sides}
+        for key, st in list(self.state.items()):
+            unreported = (frame - st["sample_frame"]) / self.fps
+            gone = blocked or junction or unreported > KEEP_MAX_S or (unreported > KEEP_S and st["support"] < SHOW_SUPPORT)
+            found, looked = None, []
+            if not gone:
+                st["stripes"].append(find_stripes(bright, float(st["ab"][0]), float(st["ab"][1]), (st["d_far"], bottom),
+                                                  self.horizon, self.lateral_h, boxes, contrast, looked))
+                st["looked"].append(looked[0])
+                st["cover"] = sum(map(len, st["stripes"])) / max(1, sum(st["looked"]))
+                recent = [(d, u, w * HISTORY_WEIGHT ** age) for age, frame_stripes in enumerate(reversed(st["stripes"]))
+                          for d, u, w in frame_stripes]
+                found = fit_stripes(recent, bottom - st["d_far"], self.lateral_h) if st["cover"] >= MIN_COVER else None
+            if found is not None:
+                gain = LOCK_GAIN if st["measured"] < LOCK_FRAMES else SNAP_GAIN
+                st["ab"] = st["ab"] + gain * (np.array(found[:2]) - st["ab"])
+                st["measured"] += 1
+                st["lowest"].append(min(found[2], bottom))
+            elif not gone:
+                st["ab"] = st["ab"] + PREDICTION_PULL * (st["prediction"] - st["ab"])
+            # down to the lowest paint of the last second: a broken line's nearest dash comes and goes
+            st["d_near"] = max([st["d_near_sample"], *st["lowest"]])
+            on_paint = found is not None or (not gone and st["cover"] >= HELD_COVER and bool(st["stripes"][-1]))
+            if on_paint or gone or (looked and looked[0] >= SNAP_MIN_POINTS):
+                # paint found, or looked for and not there; a line hidden behind vehicles keeps its support
+                st["support"] = SUPPORT_DECAY * st["support"] + (1 - SUPPORT_DECAY) * on_paint
+            shown = st["support"] >= SHOW_SUPPORT or (st["alpha"] > 0 and st["support"] >= HIDE_SUPPORT)
+            target = 1.0 if shown and steady and not gone and key in sides and (
+                st["alpha"] > 0 or bool(st["ab"][1] < 0) not in fading) else 0.0
             st["alpha"] = float(np.clip(st["alpha"] + np.sign(target - st["alpha"]) * step, 0.0, 1.0))
-            st["frame"] = frame
-            if st["alpha"] == 0.0 and target == 0.0:
-                del self.state[lid]
-        shown = sorted((st for st in self.state.values() if st["alpha"] > 0), key=lambda st: -st["support"])
-        kept: list[dict] = []  # two ids that settled on one painted line are drawn once
-        for st in shown:
+            if st["alpha"] == 0.0 and target == 0.0 and (gone or st["support"] < HIDE_SUPPORT):
+                del self.state[key]
+        # two lines that settled on one paint stripe become one: the better supported stays
+        for key in sorted(self.state, key=lambda k: self.state[k]["support"]):
+            st = self.state[key]
             d_mid = (st["d_far"] + st["d_near"]) / 2
-            u_mid = st["ab"][0] + st["ab"][1] * d_mid
-            if all(abs(u_mid - (k["ab"][0] + k["ab"][1] * d_mid)) > 0.25 * d_mid / self.lateral_h for k in kept):
-                kept.append(st)
-        return kept
+            if any(other is not st and self.apart_m(st["ab"], other["ab"], d_mid) < DUPLICATE_LINE_M
+                   and other["support"] >= st["support"] for other in self.state.values()):
+                del self.state[key]
+        return [st for st in self.state.values() if st["alpha"] > 0]
+
+    def lane_sides(self, frame: int) -> set[int]:
+        """The followed lines of the rider's lane: the nearest on each side among those followed MIN_AGE_S and with
+        paint found under them now and then (a farther line is not shown in place of a faint nearer one), skipping
+        paint inside the lane - under the rider (MIN_SIDE_X), or of a pair less than MIN_LANE_M apart the line nearer
+        the rider's path."""
+        # (offset at the rider, key, margin): the offset from the line as laid on the paint - its slope in the
+        # image - which does not waver with the samples' heading estimate
+        old = [(float(st["ab"][1]) * self.lateral_h, key, SIDE_MARGIN_M if st["alpha"] > 0 else 0.0)
+               for key, st in self.state.items() if (frame - st["born"]) / self.fps >= MIN_AGE_S
+               and st["support"] >= (HIDE_SUPPORT if st["alpha"] > 0 else SHOW_SUPPORT)]
+        old = [c for c in old if abs(c[0]) <= MAX_LINE_X and abs(c[0]) + c[2] >= MIN_SIDE_X]
+        left = sorted([c for c in old if c[0] < 0], reverse=True)  # nearest first
+        right = sorted(c for c in old if c[0] >= 0)
+        i = j = 0
+        while i < len(left) and j < len(right):
+            nearer_left = -left[i][0] < right[j][0]  # the one of the pair nearer the rider's path is the odd paint
+            if right[j][0] - left[i][0] >= MIN_LANE_M - (left[i] if nearer_left else right[j])[2]:
+                break
+            i, j = (i + 1, j) if nearer_left else (i, j + 1)
+        left, right = left[i:], right[j:]
+        if not right:
+            left = [c for c in left if -c[0] + c[2] >= LONE_MIN_X]
+        if not left:
+            right = [c for c in right if c[0] + c[2] >= LONE_MIN_X]
+        return {c[1] for c in left[:1] + right[:1]}
 
     def draw(self, image: np.ndarray, frame: int, in_bike_lane: bool, boxes: np.ndarray) -> None:
         """The lines as strips of paint in perspective, fading out towards where their paint was last seen, behind
@@ -395,7 +566,7 @@ class LaneOverlay:
         alpha = np.zeros((height - top, image.shape[1]), np.float32)
         for st in lines:
             colour = LANE_COLOURS_BGR["yellow"] if st["yellow"] else LANE_COLOURS_BGR["solid" if st["solid"] else "broken"]
-            if in_bike_lane and -2.4 <= st["x"] <= -0.3 and not st["yellow"]:
+            if in_bike_lane and -2.4 <= st["ab"][1] * self.lateral_h <= -0.3 and not st["yellow"]:
                 colour = LANE_COLOURS_BGR["bike"]
             opacity = st["alpha"] * (0.85 if st["solid"] else 0.65)
             ds = np.linspace(st["d_far"], st["d_near"], 24)
@@ -631,7 +802,9 @@ def main() -> None:
     if lanes_path.exists() and not args.no_infrastructure:
         lanes = pd.read_parquet(lanes_path)
         lanes = lanes[(lanes.time_s >= args.start_s - 2) & (lanes.time_s < end_s + 2)].reset_index(drop=True)
-        lane_overlay = LaneOverlay(lanes, calib, fps) if len(lanes) else None
+        ego_path = analysis_dir / "ego.parquet"
+        ego = pd.read_parquet(ego_path, columns=["time_s", "turn_rad"]) if ego_path.exists() else None
+        lane_overlay = LaneOverlay(lanes, calib, fps, ego) if len(lanes) else None
         objects = pd.read_parquet(infra_dir / "infrastructure.parquet")
         signs_csv = args.corpus / args.video / "signs.csv"
         if signs_csv.exists():  # its sign text has partial street names completed
@@ -645,8 +818,11 @@ def main() -> None:
     width = args.width or calib["width"]
     scale = width / calib["width"]
     size = (width, int(round(calib["height"] * scale)) // 2 * 2)
+    source = args.videos / f"{args.video}.mp4"
+    cap = open_video(source)
+    if not cap.isOpened():  # not an empty clip: say where the video was looked for
+        raise SystemExit(f"cannot read {source} (--videos, or set BIKESAFE_VIDEOS)")
     writer = VideoOut(out, fps, size, crf=args.crf, max_mbps=args.max_mbps)
-    cap = open_video(args.videos / f"{args.video}.mp4")
     first = int(np.ceil(args.start_s * fps))
     cap.set(cv2.CAP_PROP_POS_FRAMES, first)
     annotator = None
@@ -663,7 +839,7 @@ def main() -> None:
         rows = in_frame if not args.no_vehicles else in_frame.iloc[:0]
         if "n_det" in rows:  # a vehicle boxed twice is drawn once, with its longest track's box
             rows = rows.sort_values("n_det", ascending=False).drop_duplicates("vehicle_id")
-        rows = rows[(rows.box_h >= args.min_box_h) & rows.relation.apply(lambda r: isinstance(r, str))]
+        rows = rows[(rows.box_h >= args.min_box_h) & rows.relation.map(lambda r: isinstance(r, str)).astype(bool)]
         second = int(target / fps)
         info = line.loc[second] if second in line.index else None
         scene = shown_scene.get(second) if info is not None else None

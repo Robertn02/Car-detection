@@ -68,7 +68,7 @@ def zoom_tile(image: np.ndarray, box: pd.Series) -> np.ndarray:
 def sample_strata(group: pd.DataFrame) -> dict[str, pd.Index]:
     """Strata that guarantee coverage of the safety-relevant cases, not just of what the rules already predict."""
     strata = {f"rule_{name}": idx.index for name, idx in group.groupby("rule_relation")}
-    strata["near_path"] = group[(group.x_center_med.abs() <= 2.5) & (group.z_min <= 20) & (group.duration_s >= 1.5)].index
+    strata["near_path"] = group[(group.x_center_med.abs() <= 2.5) & (group.z_min <= 32) & (group.duration_s >= 1.5)].index
     strata["moving_same_way"] = group[group.v_along_med >= 3].index
     strata["moving_opposite"] = group[group.v_along_med <= -3].index
     strata["crossing_fast"] = group[group.v_lat_absmed >= 4].index

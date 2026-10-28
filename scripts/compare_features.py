@@ -35,7 +35,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None, help="CSV of the per-seed scores")
     args = parser.parse_args()
     data = train.load_labelled_tracks(args.analysis, args.labels, args.perception)
-    data = data[data.z_min <= 15].reset_index(drop=True)
+    data = data[data.z_min <= train.NEAR_Z_M].reset_index(drop=True)
     y, videos = data.label.to_numpy(), data.video.to_numpy()
     stopped = (data.ego_moving_frac < 0.5).to_numpy()
     available = set(train.feature_columns(data))

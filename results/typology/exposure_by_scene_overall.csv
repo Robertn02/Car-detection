@@ -1,4 +1,4 @@
 scene,minutes,ego_lane,adjacent_same,oncoming,parked,cross_side,door_zone_share
-separated_path,19.82,2.17,0.3,0.1,7.52,3.38,0.04
-bike_lane,7.28,0.41,5.63,13.73,45.33,4.11,0.31
-shared_road,85.09,0.75,3.4,5.64,48.08,9.89,0.35
+separated_path,19.82,1.01,0.45,0.1,6.91,5.2,0.03
+bike_lane,7.28,0.41,5.35,13.19,46.84,4.66,0.31
+shared_road,85.09,0.92,3.67,5.66,48.71,10.28,0.35

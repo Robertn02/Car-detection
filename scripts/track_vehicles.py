@@ -20,7 +20,8 @@ def colour_for(track_id: int) -> tuple[int, int, int]:
         return (160, 160, 160)
     hue = (track_id * 47) % 180
     pixel = np.uint8([[[hue, 190, 235]]])
-    return tuple(int(v) for v in cv2.cvtColor(pixel, cv2.COLOR_HSV2BGR)[0, 0])
+    b, g, r = (int(v) for v in cv2.cvtColor(pixel, cv2.COLOR_HSV2BGR)[0, 0])
+    return b, g, r
 
 
 def main() -> None:

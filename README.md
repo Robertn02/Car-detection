@@ -23,14 +23,14 @@ whole video (a 20-minute ride takes about 1.5 hours on an L4).
 
 ## Demos
 
-| Green-painted bike lane | Bike lane beside traffic: three overtakes | Two close passes, then a red light |
+| Green-painted bike lane | Bike lane beside traffic: three overtakes | Two close passes and two red lights |
 | --- | --- | --- |
-| [![green lane](demos/overlay_001_greenlane_600s.jpg)](https://robertn02.github.io/Car-detection/#overlay_001_greenlane_600s) | [![overtakes](demos/overlay_006_overtakes_225s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_overtakes_225s) | [![close passes](demos/overlay_005_closepass_800s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_closepass_800s) |
-| **Following a car from a red light** | **Parked rows, then a red light** | **At night: close passes and a red light** |
-| [![following](demos/overlay_005_following_280s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_280s) | [![parked](demos/overlay_006_parked_700s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_700s) | [![night](demos/overlay_002_night_350s.jpg)](https://robertn02.github.io/Car-detection/#overlay_002_night_350s) |
+| [![green lane](demos/overlay_001_greenlane_590s.jpg)](https://robertn02.github.io/Car-detection/#overlay_001_greenlane_590s) | [![overtakes](demos/overlay_006_overtakes_200s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_overtakes_200s) | [![close passes](demos/overlay_005_closepass_712s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_closepass_712s) |
+| **Following in traffic** | **Red lights beside parked rows** | **At night: overtakes and close passes** |
+| [![following](demos/overlay_005_following_260s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_260s) | [![parked](demos/overlay_006_parked_680s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_680s) | [![night](demos/overlay_002_night_340s.jpg)](https://robertn02.github.io/Car-detection/#overlay_002_night_340s) |
 
-Click a picture to play the clip (60 s, the camera's full size and frame rate); under each clip, its events jump the
-video there. Box colours: red in my lane, orange other lane, magenta oncoming, grey parked, blue side road; lane lines
+Click a picture to play the clip (2 minutes, the camera's full size and frame rate); under each clip, its events jump
+the video there. Box colours: red in my lane, orange other lane, magenta oncoming, grey parked, blue side road; lane lines
 are drawn on the road paint, green beside the rider in a bike lane.
 
 ## Outputs
@@ -51,16 +51,18 @@ Six rides, 112 minutes ([details and limitations](docs/TYPOLOGY_PIPELINE.md)):
 
 | Measure | Value |
 | --- | --- |
-| Relation right, labelled vehicles within 15 m (rides the model was not trained on) | 71% (77% within 5 m) |
-| Vehicles seen while the rider waited, called parked | 4.5% (92% of 52 such labelled vehicles right) |
+| Relation right, labelled vehicles within 25 m (rides the model was not trained on) | 71% (76% within 16 m) |
+| Vehicles seen while the rider waited, called parked | 4.1% (91% of 57 such labelled vehicles right) |
+| Distances and speeds against GPS (five rides) | within 3% after calibration (the camera alone: 1.5-1.9x short) |
 | Riding context right (307 labelled frames) | 89% |
 | Signs seen at least 40 px tall that get a type | 61%: 74% by day, 24% at night |
 | Plates read, daytime tracks boxed at least 60 px tall | 12-16% (8-10% of all tracks) |
 
-Found on the six rides: 45 overtakes, 25 of them closer than 1.5 m, and 55 waits at red lights. The labels come from
-AI-assisted review that a person has yet to check (the review page's verify queue), and speeds and distances measured
-from the video read about 0.6 of the GPS speed, so the metres are not yet calibrated - see the
-[limitations](docs/TYPOLOGY_PIPELINE.md#known-limitations).
+Found on the six rides: 46 overtakes, 25 of them closer than 1.5 m, and 53 waits at red lights. Distances ahead and
+speeds are calibrated against the rides' Strava GPS (`python -m bikesafe.gps --calibrate`); side distances come from
+car widths. Most labels come from AI-assisted review; a person has checked the first 20 on the review page, and the
+rest wait in its verify queue -
+see the [limitations](docs/TYPOLOGY_PIPELINE.md#known-limitations).
 
 ## Review and correct
 

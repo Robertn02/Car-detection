@@ -14,6 +14,27 @@ DEMOS, DURATION_S, HEAT = build_site.DEMOS, build_site.DURATION_S, build_site.HE
 demo_gps, exposure_data, polylines = build_site.demo_gps, build_site.exposure_data, build_site.polylines
 
 
+def test_the_local_server_answers_byte_ranges_so_clips_can_be_seeked(tmp_path):
+    import threading
+    import urllib.request
+    from functools import partial
+    from http.server import ThreadingHTTPServer
+
+    (tmp_path / "clip.mp4").write_bytes(bytes(range(256)) * 4)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(build_site.RangeHandler, directory=str(tmp_path)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/clip.mp4"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Range": "bytes=10-19"})) as r:
+            assert r.status == 206 and r.headers["Content-Range"] == "bytes 10-19/1024" and r.read() == bytes(range(10, 20))
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Range": "bytes=-4"})) as r:
+            assert r.read() == bytes(range(252, 256))
+        with urllib.request.urlopen(url) as r:
+            assert r.status == 200 and r.headers["Accept-Ranges"] == "bytes" and len(r.read()) == 1024
+    finally:
+        server.shutdown()
+
+
 def test_routes_break_where_positions_are_hidden():
     t = pd.DataFrame({"lat": [1.0, 2.0, np.nan, np.nan, 3.0, 4.0, np.nan, 5.0],
                       "lon": [9.0, 9.0, np.nan, np.nan, 9.0, 9.0, np.nan, 9.0]})
@@ -52,10 +73,12 @@ def test_a_demo_lists_what_happens_in_it_once_per_vehicle(tmp_path):
         {"event": "overtaken_by_vehicle", "vehicle_id": 2, "t_start": 630.0, "clearance_m": 2.9, "side": "right"},
         {"event": "red_light_wait", "t_start": 640.0, "duration_s": 12.0},
         {"event": "crossing_traffic_near", "vehicle_id": 3, "t_start": 645.0},  # too common to list
-        {"event": "stop_sign", "t_start": 700.0}]).to_csv(ride / "events.csv", index=False)  # after the clip
+        {"event": "stop_sign", "t_start": 730.0}]).to_csv(ride / "events.csv", index=False)  # after the 2-minute clip
     moments = build_site.demo_moments("VID_X_001", 600, corpus=tmp_path)
-    assert moments == [(10.0, "close pass on the left, 1.16 m to the side"),
-                       (30.0, "overtaken on the right, 2.90 m to the side"), (40.0, "waits 12 s at a red light")]
+    assert [(m["t"], m["kind"], m["text"]) for m in moments] == [
+        (10.0, "close_pass", "Close pass on the left, 1.16 m to the side"),
+        (30.0, "overtake", "Overtaken on the right, 2.90 m to the side"), (40.0, "red_wait", "Waits 12 s at a red light")]
+    assert moments[2]["span"] == 12.0  # drawn as a stretch of the timeline
 
 
 def test_the_headline_numbers_add_up_the_rides(tmp_path):
@@ -65,7 +88,13 @@ def test_the_headline_numbers_add_up_the_rides(tmp_path):
                   "events_close_pass_under_1p5m": [1, 2], "door_zone_seconds": [60, 300],
                   "events_red_light_wait": [2, 3], "red_light_wait_seconds": [60, 120]}).to_csv(
         tmp_path / "corpus_summary.csv", index=False)
-    rows = dict(build_site.at_a_glance(corpus=tmp_path, typology=tmp_path / "none"))
-    assert rows["Filmed"] == "30 minutes on 2 rides" and rows["Overtakes"] == "7, of them 3 closer than 1.5 m"
-    assert rows["Vehicles within 15 m"].startswith("400: 70% parked") and rows["Waits at red lights"] == "5, 3 minutes in all"
-    assert rows["Beside parked cars in the door zone"] == "20% of the time" and "Relation right" not in rows
+    figures = {f["value"]: f["label"] for f in build_site.at_a_glance(corpus=tmp_path)}
+    assert figures == {"30 min": "filmed on 2 rides", "400": "vehicles within 25 m of the rider",
+                       "7": "overtakes, 3 within 1.5 m", "20%": "of riding time in the door zone"}
+
+
+def test_the_page_carries_its_demos_and_the_template_is_filled():
+    page = build_site.index_page({})
+    assert "__REPO__" not in page and "<!--DATA-->" not in page and "const SITE = " in page
+    for name, *_ in DEMOS:
+        assert f"demos/{name}.mp4" in page

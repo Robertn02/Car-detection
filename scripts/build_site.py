@@ -2,28 +2,35 @@
 install. GitHub Pages serves it from the gh-pages branch, at https://robertn02.github.io/Car-detection/.
 
     python scripts/build_site.py                    # into work/site, a worktree of the gh-pages branch
-    python -m http.server -d work/site 8000         # look at it: http://127.0.0.1:8000
+    python scripts/build_site.py --serve 8000       # look at it: http://127.0.0.1:8000
     git -C work/site add -A
     git -C work/site commit -m "Update the site"
     git -C work/site push origin gh-pages
 
 The clips (a few hundred MB) live on that branch only, so main stays quick to clone (the Colab notebook clones it).
-The demos are rendered at the videos' own size and frame rate as H.264 at CRF 23, capped at 10 Mbit/s so they
-stream; the review page is `bikesafe.review --export` (decisions made on it are downloaded from its Progress tab and
-added with `bikesafe.review --import`). Needs the ride videos (BIKESAFE_VIDEOS) and the finished analysis
+The demos (2 minutes each) are rendered at the videos' own size and frame rate as H.264 at CRF 23, capped at
+5.5 Mbit/s so they stream and stay under GitHub's 100 MB a file. The page itself is scripts/site/ (template,
+stylesheet and script) filled with the tables' numbers; the review page is `bikesafe.review --export` (decisions made
+on it are downloaded and added with `bikesafe.review --import`). Needs the ride videos (BIKESAFE_VIDEOS) and the finished analysis
 (work/analysis, results/corpus). Posters for the README are written to demos/ as well.
 
 Rides with a GPS track (bikesafe.gps, results/corpus/<video>/gps_1s.csv) get a map beside their demo, whose dot follows
 the video, and make up the exposure map (map/). After running bikesafe.gps, --pages-only writes just the pages.
+
+--serve serves the built site locally. Unlike `python -m http.server`, it answers byte-range requests, as GitHub
+Pages does: without them a browser cannot jump to a moment in a clip and plays it from the start instead.
 """
 
 from __future__ import annotations
 
 import argparse
-import html
 import json
+import re
+import shutil
 import subprocess
 import sys
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import cv2
@@ -33,31 +40,40 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS  # noqa: E402
+from bikesafe.exposure import RELIABLE_Z_M  # noqa: E402
 
 REPO = "https://github.com/Robertn02/Car-detection"
 COLAB = "https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb"
 # file name, ride, start (s), title, what to look for. Windows are outside the rides' privacy zones (bikesafe.review.
 # private_seconds) and were picked from the events: each shows what its title says.
-DEMOS = [("overlay_001_greenlane_600s", "VID_20260209_090112_00_001", 600, "Green-painted bike lane",
+DEMOS = [("overlay_001_greenlane_590s", "VID_20260209_090112_00_001", 590, "Green-painted bike lane",
           "The riding context turns to bike lane on the green lane, and the lines beside the rider turn green."),
-         ("overlay_006_overtakes_225s", "VID_20260224_162848_00_006", 225, "Bike lane beside traffic: three overtakes",
+         ("overlay_006_overtakes_200s", "VID_20260224_162848_00_006", 200, "Bike lane beside traffic: three overtakes",
           "Cars in the lane to the left pass the rider; each overtake is measured by its side gap."),
-         ("overlay_005_closepass_800s", "VID_20260224_091119_00_005", 800, "Two close passes, then a red light",
-          "Two vehicles pass within 1.5 m on the left; the rider then waits at a red light."),
-         ("overlay_005_following_280s", "VID_20260224_091119_00_005", 280, "Following a car from a red light",
+         ("overlay_005_closepass_712s", "VID_20260224_091119_00_005", 712, "Two close passes and two red lights",
+          "Two stops at red lights, then two vehicles pass within 1.5 m on the left."),
+         ("overlay_005_following_260s", "VID_20260224_091119_00_005", 260, "Following in traffic",
           "The car ahead in the rider's lane is red: in my lane, with its distance."),
-         ("overlay_006_parked_700s", "VID_20260224_162848_00_006", 700, "Parked rows, then a red light",
-          "Parked cars (grey) line the kerb while traffic waits at the junction; side-road traffic is blue."),
-         ("overlay_002_night_350s", "VID_20260209_183334_00_002", 350, "At night: close passes and a red light",
+         ("overlay_006_parked_680s", "VID_20260224_162848_00_006", 680, "Red lights beside parked rows",
+          "Parked cars (grey) line the kerb while the rider waits at two red lights; side-road traffic is blue."),
+         ("overlay_002_night_340s", "VID_20260209_183334_00_002", 340, "At night: overtakes and close passes",
           "Detection works by headlight and street light; lane paint is found where the light reaches it.")]
-DURATION_S = 60
-CRF, MAX_MBPS = 23, 10
+DURATION_S = 120
+# two minutes at the camera's size and frame rate: capped at 5.5 Mbit/s so a clip stays under GitHub's 100 MB a file
+CRF, MAX_MBPS = 23, 5.5
+HIGHLIGHT = ("overlay_006_overtakes_200s", 33, 14)  # the page's looping header clip: demo, from (s), seconds
+NIGHT_RIDES = ("002", "004")
 POSTER_WIDTH = 1280
 CORPUS = ROOT / "results" / "corpus"
 LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4"
 # OpenStreetMap's own tiles need no key and have street names; the dark maps are the same tiles through a CSS filter
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 TILE_CREDIT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+# Where tile.openstreetmap.org cannot be reached (a network whose DNS does not resolve it), the maps fall back to the
+# Humanitarian OSM style served by OpenStreetMap France: the same data, no key needed
+TILE_FALLBACK = {"url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
+                 "credit": TILE_CREDIT + ', tiles <a href="https://www.hotosm.org/">HOT</a> hosted by '
+                                         '<a href="https://openstreetmap.fr/">OSM France</a>'}
 DARK_TILES = "invert(1) grayscale(1) brightness(0.75) contrast(1.1)"
 HEAT_RAMP = ["#2c1a6e", "#b3206e", "#f05a28", "#fbb33b", "#fffbe6"]  # least to most, on the map and its legend
 # heatmap layers: per-second counts from timeline_1s.csv (value = column or sum of columns)
@@ -67,8 +83,10 @@ HEAT = {"traffic": ("Moving traffic around the rider", ["n_ego_lane", "n_adjacen
         "parked": ("Parked cars alongside", ["n_parked"])}
 EVENTS = {"close_pass_under_1p5m": "Close pass (under 1.5 m)", "oncoming_close_pass": "Oncoming close pass",
           "vehicle_close_in_my_lane": "Vehicle close in my lane", "overtaken_by_vehicle": "Overtaken"}
-SCENES = {"separated_path": ("Separated path", "#3ecf8e"), "bike_lane": ("Bike lane", "#4aa3ff"),
-          "shared_road": ("Shared road", "#ff7a45")}
+# riding contexts, the same colours on the map and the page's charts
+SCENES = {"separated_path": ("Separated path", "#2aa39a"), "bike_lane": ("Bike lane", "#35a565"),
+          "shared_road": ("Shared road", "#9aa4a9")}
+CONTEXT_COLOURS = SCENES
 
 
 def git(*args: str) -> subprocess.CompletedProcess:
@@ -114,6 +132,25 @@ def render(out: Path, again: bool) -> None:
                         str(DURATION_S), "--crf", str(CRF), "--max-mbps", str(MAX_MBPS), "--out", str(clip)],
                        cwd=ROOT, check=True)
         poster(clip, clip.with_suffix(".jpg"), ROOT / "demos" / f"{name}.jpg")
+    highlight(out)
+
+
+def highlight(out: Path) -> None:
+    """The page's header clip: a few seconds of one demo, smaller, looping without sound."""
+    import imageio_ffmpeg
+
+    name, start, seconds = HIGHLIGHT
+    source, clip = out / "demos" / f"{name}.mp4", out / "demos" / "highlight.mp4"
+    if not source.exists():
+        return
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-y", "-ss", str(start), "-t", str(seconds),
+                    "-i", str(source), "-vf", "scale=1280:-2", "-c:v", "libx264", "-crf", "27", "-preset", "slow",
+                    "-an", "-movflags", "+faststart", str(clip)], check=True)
+    cap = cv2.VideoCapture(str(clip))
+    ok, image = cap.read()
+    cap.release()
+    if ok:
+        cv2.imwrite(str(clip.with_suffix(".jpg")), image, [cv2.IMWRITE_JPEG_QUALITY, 82])
 
 
 def hex_colour(bgr: tuple[int, int, int]) -> str:
@@ -185,196 +222,125 @@ def exposure_data(rides: dict[str, pd.DataFrame]) -> dict:
             "event_names": EVENTS, "scenes": [[label, colour] for label, colour in SCENES.values()]}
 
 
-def demo_moments(ride: str, start: int, corpus: Path = CORPUS) -> list[tuple[float, str]]:
-    """What happens in a demo clip, from the ride's events.csv: (seconds into the clip, in words), in time order. A
-    close pass is said once, as the overtake it is."""
+KINDS = {"close_pass": ("Close pass, under 1.5 m", "#c8322f"), "overtake": ("Overtaken", "#ff9600"),
+         "in_lane": ("Vehicle close ahead in my lane", "#eb2828"), "oncoming": ("Oncoming vehicle passes close", "#c83cc8"),
+         "red_wait": ("Waiting at a red light", "#8f1f1c"), "stop_sign": ("Stop sign", "#5a646b")}
+RELATION_MEANING = {"ego_lane": "in the lane the rider rides in", "adjacent_same": "same direction, another lane",
+                    "oncoming": "coming the other way", "parked": "at the kerb or in a lot",
+                    "cross_side": "on a side road or crossing"}
+SITE_FILES = ROOT / "scripts" / "site"  # the page's template, stylesheet and script
+
+
+def demo_moments(ride: str, start: int, corpus: Path = CORPUS, duration: int = DURATION_S) -> list[dict]:
+    """What happens in a demo clip, from the ride's events.csv, in time order: seconds into the clip, the kind
+    (KINDS), in words, and how long for a wait. A close pass is said once, as the overtake it is."""
     path = corpus / ride / "events.csv"
     if not path.exists():
         return []
     ev = pd.read_csv(path)
-    ev = ev[(ev.t_start >= start) & (ev.t_start < start + DURATION_S)].sort_values("t_start")
+    ev = ev[(ev.t_start >= start) & (ev.t_start < start + duration)].sort_values("t_start")
     close = set(ev.loc[ev.event == "close_pass_under_1p5m", "vehicle_id"].dropna())
-    words = {"vehicle_close_in_my_lane": "a vehicle close ahead in my lane", "oncoming_close_pass": "an oncoming vehicle passes close",
-             "stop_sign": "a stop sign"}
     out = []
     for e in ev.itertuples():
         at = round(float(e.t_start) - start, 1)
         if e.event == "overtaken_by_vehicle":
-            kind = "close pass" if e.vehicle_id in close else "overtaken"
-            out.append((at, f"{kind} on the {e.side}, {float(e.clearance_m):.2f} m to the side"))
+            kind = "close_pass" if e.vehicle_id in close else "overtake"
+            words = "Close pass" if kind == "close_pass" else "Overtaken"
+            out.append({"t": at, "kind": kind, "text": f"{words} on the {e.side}, {float(e.clearance_m):.2f} m to the side"})
         elif e.event == "red_light_wait":
-            out.append((at, f"waits {float(e.duration_s):.0f} s at a red light"))
-        elif e.event in words:
-            out.append((at, words[e.event]))
+            out.append({"t": at, "kind": "red_wait", "text": f"Waits {float(e.duration_s):.0f} s at a red light",
+                        "span": round(min(float(e.duration_s), start + duration - float(e.t_start)), 1)})
+        elif e.event == "vehicle_close_in_my_lane":
+            out.append({"t": at, "kind": "in_lane", "text": f"A vehicle {float(e.z_min_m):.0f} m ahead in my lane"})
+        elif e.event == "oncoming_close_pass":
+            out.append({"t": at, "kind": "oncoming", "text": "An oncoming vehicle passes close"})
+        elif e.event == "stop_sign":
+            out.append({"t": at, "kind": "stop_sign", "text": "A stop sign"})
     return out
 
 
-def at_a_glance(corpus: Path = CORPUS, typology: Path = ROOT / "results" / "typology") -> list[tuple[str, str]]:
-    """The headline numbers of the rides, from the tables: (what, how much)."""
+def demo_tags(ride: str, start: int, moments: list[dict], corpus: Path = CORPUS, duration: int = DURATION_S) -> list[str]:
+    """A few words for a demo's card: night, the riding context it is mostly in, and what happens."""
+    line = pd.read_csv(corpus / ride / "timeline_1s.csv")
+    window = line[(line.second >= start) & (line.second < start + duration)]
+    tags = []
+    if ride.endswith(NIGHT_RIDES):
+        tags.append("night")
+    shares = window.scene.value_counts(normalize=True)
+    for scene, (label, _) in SCENES.items():
+        if shares.get(scene, 0) >= 0.3:
+            tags.append(label.lower())
+    kinds = [m["kind"] for m in moments]
+    plural = lambda n, word, words: f"{n} {word if n == 1 else words}"  # noqa: E731
+    overtakes, close = kinds.count("overtake") + kinds.count("close_pass"), kinds.count("close_pass")
+    if overtakes:
+        tags.append(plural(overtakes, "overtake", "overtakes"))
+    if close:
+        tags.append(plural(close, "close pass", "close passes"))
+    if "red_wait" in kinds:
+        tags.append("red lights" if kinds.count("red_wait") > 1 else "red light")
+    if kinds.count("in_lane") >= 3:
+        tags.append("following")
+    return tags
+
+
+def at_a_glance(corpus: Path = CORPUS) -> list[dict]:
+    """The four headline numbers of the rides, from the tables: value and what it is."""
     s = pd.read_csv(corpus / "corpus_summary.csv")
     minutes = float(s.minutes.sum())
-    vehicles = int(s.vehicles_counted.sum())
-    rows = [("Filmed", f"{minutes:.0f} minutes on {len(s)} rides"),
-            ("Vehicles within 15 m", f"{vehicles:,}: {s.vehicles_parked.sum() / vehicles:.0%} parked, "
-                                     f"{s.vehicles_cross_side.sum() / vehicles:.0%} on side roads, "
-                                     f"{(s.vehicles_adjacent_same.sum() + s.vehicles_oncoming.sum()) / vehicles:.0%} "
-                                     f"sharing the road, {s.vehicles_ego_lane.sum() / vehicles:.0%} in the rider's lane"),
-            ("Overtakes", f"{int(s.events_overtaken_by_vehicle.sum())}, of them "
-                          f"{int(s.events_close_pass_under_1p5m.sum())} closer than 1.5 m"),
-            ("Beside parked cars in the door zone", f"{s.door_zone_seconds.sum() / 60 / minutes:.0%} of the time")]
-    if "events_red_light_wait" in s:
-        rows.append(("Waits at red lights", f"{int(s.events_red_light_wait.sum())}, "
-                                            f"{s.red_light_wait_seconds.sum() / 60:.0f} minutes in all"))
+    return [{"value": f"{minutes:.0f} min", "label": f"filmed on {len(s)} rides"},
+            {"value": f"{int(s.vehicles_counted.sum()):,}", "label": f"vehicles within {RELIABLE_Z_M:.0f} m of the rider"},
+            {"value": f"{int(s.events_overtaken_by_vehicle.sum())}",
+             "label": f"overtakes, {int(s.events_close_pass_under_1p5m.sum())} within 1.5 m"},
+            {"value": f"{s.door_zone_seconds.sum() / 60 / minutes:.0%}", "label": "of riding time in the door zone"}]
+
+
+def accuracy_note(typology: Path = ROOT / "results" / "typology") -> str:
+    """How often the deployed model was right, on rides it was not trained on (empty without an evaluation)."""
     predictions = typology / "relation_lovo_predictions.csv"
-    if predictions.exists():
-        chosen = json.loads((typology / "evaluation_summary.json").read_text())["selected_model"]
-        p = pd.read_csv(predictions)
-        near = p[p.z_min <= 15]
-        rows.append(("Relation right", f"{(near[f'pred_{chosen}'] == near.label).mean():.0%} of {len(near)} labelled "
-                                       f"vehicles within 15 m, on rides the model was not trained on"))
-    return rows
+    if not predictions.exists():
+        return ""
+    summary = json.loads((typology / "evaluation_summary.json").read_text())
+    p = pd.read_csv(predictions)
+    near = p[p.z_min <= summary.get("near_z_m", RELIABLE_Z_M)]
+    right = (near[f"pred_{summary['selected_model']}"] == near.label).mean()
+    return (f"The model gets {right:.0%} of {len(near)} labelled vehicles within {summary.get('near_z_m', RELIABLE_Z_M):.0f} m "
+            f"right, on rides it was not trained on; the labels come from AI-assisted review a person has yet to check. ")
 
 
-STYLE = """:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#66665f; --line:#deded9; --accent:#2b6cb0;
-  --on-accent:#fff; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39d;
-  --line:#33332f; --accent:#63a4e8; --on-accent:#0b1a2b; } }
-* { box-sizing:border-box; }
-body { margin:0; font:16px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
-a { color:var(--accent); } .muted { color:var(--muted); font-size:14px; }
-.button { display:inline-block; padding:7px 14px; border-radius:6px; background:var(--accent); color:var(--on-accent);
-  text-decoration:none; font-weight:600; }"""
-
-# The moments under a demo jump its video there.
-MOMENTS_JS = """
-document.querySelectorAll(".moment").forEach(b => b.onclick = () => {
-  const video = b.closest(".demo").querySelector("video");
-  video.currentTime = +b.dataset.t; video.play();
-});"""
-
-# The demo maps: a dot that follows the video along the clip's stretch of the route (blue), the rest of the ride grey.
-DEMO_MAP_JS = """
-const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-const accent = dark ? "#63a4e8" : "#2b6cb0";
-for (const [name, g] of Object.entries(GPS)) {
-  const video = document.querySelector(`#${name} video`);
-  const map = L.map(`map-${name}`, {scrollWheelZoom: false});
-  L.tileLayer(TILE_URL, {attribution: TILE_CREDIT, maxZoom: 19}).addTo(map);
-  for (const line of g.route) L.polyline(line, {color: dark ? "#8a8a84" : "#9a9a94", weight: 3, opacity: 0.7}).addTo(map);
-  const clip = L.polyline(g.clip.filter(Boolean), {color: accent, weight: 6}).addTo(map);
-  map.fitBounds(clip.getBounds().pad(0.8));
-  const dot = L.circleMarker(g.clip.find(Boolean), {radius: 8, color: "#fff", weight: 2, fillColor: accent, fillOpacity: 1}).addTo(map);
-  const at = t => {  // t seconds into the clip: between the positions of the whole seconds around it
-    const i = Math.max(0, Math.min(g.clip.length - 1, Math.floor(t))), a = g.clip[i], b = g.clip[i + 1] || a, f = t - i;
-    return a && [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
-  };
-  const follow = () => { const p = at(video.currentTime); if (p) { dot.setLatLng(p); if (!map.getBounds().pad(-0.15).contains(p)) map.panTo(p); } };
-  let frame = 0;
-  const loop = () => { follow(); frame = requestAnimationFrame(loop); };
-  video.addEventListener("play", () => { cancelAnimationFrame(frame); loop(); });
-  video.addEventListener("pause", () => cancelAnimationFrame(frame));
-  video.addEventListener("seeked", follow);
-  clip.on("click", e => {  // jump the video to the nearest second of the clip
-    let best = 0, d = Infinity;
-    g.clip.forEach((p, i) => { if (p) { const dd = (p[0] - e.latlng.lat) ** 2 + (p[1] - e.latlng.lng) ** 2; if (dd < d) { d = dd; best = i; } } });
-    video.currentTime = best; follow();
-  });
-}"""
+def page_data(gps: dict, corpus: Path = CORPUS) -> dict:
+    """Everything the project page draws (scripts/site/site.js reads it as SITE)."""
+    demos = []
+    for name, ride, start, title, look in DEMOS:
+        moments = demo_moments(ride, start, corpus)
+        demos.append({"name": name, "title": title, "look": look, "ride": int(ride[-3:]), "start": start,
+                      "duration": DURATION_S, "video": f"demos/{name}.mp4", "poster": f"demos/{name}.jpg",
+                      "tags": demo_tags(ride, start, moments, corpus), "moments": moments, "gps": gps.get(name)})
+    by_scene = pd.read_csv(ROOT / "results" / "typology" / "exposure_by_scene_overall.csv").set_index("scene")
+    exposure = [{"scene": s, "label": label, "colour": colour, "minutes": float(by_scene.at[s, "minutes"]),
+                 "per_min": {r: float(by_scene.at[s, r]) for r in RELATIONS}}
+                for s, (label, colour) in CONTEXT_COLOURS.items() if s in by_scene.index]
+    calibration = corpus / "metric_calibration.json"
+    rides = json.loads(calibration.read_text())["rides"] if calibration.exists() else {}
+    scales = [e["metric_scale"] for e in rides.values()]
+    checks = [abs(e["now"]["gps_over_parked_closing"] - 1) for e in rides.values() if e.get("now")]
+    calibrated = (f"Distances and speeds are calibrated against the rides' GPS, to within {max(checks):.0%}; "
+                  f"the camera alone read them {min(scales):.1f}-{max(scales):.1f} times too short. ") if checks else ""
+    return {"relations": [{"key": r, "label": RELATION_TEXT[r], "meaning": RELATION_MEANING[r],
+                           "colour": hex_colour(RELATION_COLOURS_BGR[r])} for r in RELATIONS],
+            "kinds": {k: {"label": label, "colour": colour} for k, (label, colour) in KINDS.items()},
+            "demos": demos, "figures": at_a_glance(corpus), "exposure": exposure,
+            "resultsLede": "What a handlebar camera adds up to over 112 minutes of commuting in Los Angeles.",
+            "fineprint": accuracy_note() + calibrated,
+            "tiles": {"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK}}
 
 
 def index_page(gps: dict) -> str:
-    legend = "".join(f'<span class="key"><i style="background:{hex_colour(RELATION_COLOURS_BGR[r])}"></i>'
-                     f'{html.escape(RELATION_TEXT[r])}</span>' for r in RELATIONS)
-
-    glance = "".join(f"<tr><th>{html.escape(k)}</th><td>{html.escape(v)}</td></tr>" for k, v in at_a_glance())
-
-    def demo(name: str, ride: str, start: int, title: str, look: str) -> str:
-        where = (f'<div class="map" id="map-{name}"></div>' if name in gps else
-                 '<div class="map nomap"><p class="muted">No GPS was recorded on this ride.</p></div>')
-        hint = " &middot; the dot follows the video; click the blue line to jump there" if name in gps else ""
-        moments = "".join(f'<button class="moment" data-t="{max(0.0, t - 1):.1f}">{int(t) // 60}:{int(t) % 60:02d} '
-                          f'{html.escape(text)}</button>' for t, text in demo_moments(ride, start))
-        return f'''
-<section class="demo" id="{name}">
-  <h2>{html.escape(title)}</h2>
-  <p class="look">{html.escape(look)}</p>
-  <div class="pair"><video controls playsinline preload="metadata" poster="demos/{name}.jpg" src="demos/{name}.mp4"></video>
-  {where}</div>
-  {f'<div class="moments"><span class="muted">In this clip:</span> {moments}</div>' if moments else ""}
-  <p class="muted">Ride {ride[-1]}, from {start // 60}:{start % 60:02d} &middot; {DURATION_S} s at the camera's full size and
-  frame rate{hint} &middot; <a href="demos/{name}.mp4" download>download</a></p>
-</section>'''
-
-    maps = "" if not gps else (
-        f'<link rel="stylesheet" href="{LEAFLET}/leaflet.css"><script src="{LEAFLET}/leaflet.js"></script>\n'
-        f"<script>\nconst GPS = {json.dumps(gps, separators=(',', ':'))};\nconst TILE_URL = {json.dumps(TILE_URL)};\n"
-        f"const TILE_CREDIT = {json.dumps(TILE_CREDIT)};{DEMO_MAP_JS}\n</script>")
-    return f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bike route vehicle typology</title>
-<style>
-{STYLE}
-main {{ max-width:1200px; margin:0 auto; padding:24px 16px 48px; }}
-h1 {{ font-size:28px; margin:0 0 6px; }} h2 {{ font-size:19px; margin:0 0 10px; }}
-.lead {{ max-width:760px; margin:0 0 14px; }}
-.keys {{ display:flex; flex-wrap:wrap; gap:6px 16px; margin:0 0 24px; font-size:14px; }}
-.key i {{ display:inline-block; width:14px; height:14px; border-radius:3px; margin-right:6px; vertical-align:-2px; }}
-.cards {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(230px, 1fr)); gap:14px; margin:0 0 28px; }}
-.card {{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }}
-.card h2 {{ font-size:17px; }} .card p {{ margin:0 0 10px; }}
-.demo {{ margin:0 0 36px; }} .look {{ margin:0 0 10px; max-width:860px; }}
-.moments {{ display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:10px 0 4px; }}
-.moment {{ font:inherit; font-size:14px; color:inherit; background:var(--panel); border:1px solid var(--line);
-  border-radius:14px; padding:3px 10px; cursor:pointer; }}
-.moment:hover, .moment:focus-visible {{ border-color:var(--accent); outline:none; }}
-.two {{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:14px; margin:0 0 28px; }}
-@media (max-width:800px) {{ .two {{ grid-template-columns:1fr; }} }}
-table.glance {{ border-collapse:collapse; width:100%; font-size:15px; }}
-.glance th {{ text-align:left; font-weight:600; padding:4px 12px 4px 0; vertical-align:top; width:38%; }}
-.glance td {{ padding:4px 0; }} .glance tr + tr th, .glance tr + tr td {{ border-top:1px solid var(--line); }}
-.read ul {{ margin:0; padding-left:18px; }} .read li {{ margin:0 0 6px; }}
-.swatch {{ display:inline-block; width:22px; height:5px; border-radius:3px; vertical-align:3px; margin-right:4px; }}
-.pair {{ display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:12px; }}
-@media (max-width:800px) {{ .pair {{ grid-template-columns:1fr; }} .map {{ aspect-ratio:4/3; }} }}
-video {{ width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; display:block; }}
-.map {{ width:100%; height:100%; min-height:240px; border-radius:8px; border:1px solid var(--line); background:var(--panel); }}
-.nomap {{ display:flex; align-items:center; justify-content:center; padding:16px; text-align:center; }}
-.map .leaflet-tile-pane {{ filter:grayscale(0.5); }}
-@media (prefers-color-scheme: dark) {{ .map .leaflet-tile-pane {{ filter:{DARK_TILES}; }} }}
-</style></head><body><main>
-<h1>Bike route vehicle typology</h1>
-<p class="lead">From a handlebar camera, every vehicle around the rider and how it relates to the rider, with the
-riding context, traffic signals, signs (typed and read) and licence plates. Box colours:</p>
-<div class="keys">{legend}</div>
-<div class="two">
-  <div class="card"><h2>At a glance</h2><table class="glance">{glance}</table>
-  <p class="muted">Relations are checked against labels from AI-assisted review that a person has yet to check;
-  distances read low against the GPS. <a href="{REPO}/blob/main/docs/TYPOLOGY_PIPELINE.md#known-limitations">Limitations</a></p></div>
-  <div class="card read"><h2>Reading the overlay</h2><ul>
-  <li><b>Boxes</b> in the colour of the vehicle's relation, labelled with it and how far ahead it is ("same way 9m");
-  "?" when the model is unsure. Vehicles beyond 25 m get a thin box and no label.</li>
-  <li><b>Lane lines</b> found in the road paint: <span class="swatch" style="background:#e8e8e8"></span>white,
-  <span class="swatch" style="background:#ffdc00"></span>yellow, and <span class="swatch" style="background:#50e650"></span>green
-  beside the rider when the rider is in a bike lane.</li>
-  <li><b>Signals</b> boxed in the lamp's colour ("signal red"); <b>signs</b> with their type or what they say (street
-  names, parking hours, "SPEED LIMIT 35"); <b>plates</b> boxed in yellow with the text read.</li>
-  <li><b>Top bar</b>: time into the ride, the riding context (most common over 7 s), the rider's speed (from the GPS
-  where the ride has it), the signal ahead and the posted limit.</li></ul></div>
-</div>
-<div class="cards">
-  {"" if not gps else """<div class="card"><h2>Exposure map</h2><p>Where along the rides the rider met traffic, parked
-  cars and close passes, from the detections and the GPS tracks.</p><a class="button" href="map/">Open the map</a></div>"""}
-  <div class="card"><h2>Review page</h2><p>The model's answers - vehicles, signs, plates - most likely errors first.
-  Confirm or correct with one key; decisions stay in your browser until you download them.</p>
-  <a class="button" href="review/">Open the review page</a></div>
-  <div class="card"><h2>Your own video</h2><p>Runs in Google Colab on a free GPU: nothing to install. Results go to
-  your Google Drive.</p><a class="button" href="{COLAB}">Open in Colab</a></div>
-  <div class="card"><h2>Code and results</h2><p>Per-ride tables, accuracy and limitations, and the pipeline.</p>
-  <a class="button" href="{REPO}">GitHub</a></div>
-</div>{"".join(demo(*d) for d in DEMOS)}
-</main>{maps}<script>{MOMENTS_JS}
-</script></body></html>
-'''
+    """The project page: scripts/site/index.html with the page's data."""
+    template = (SITE_FILES / "index.html").read_text(encoding="utf-8")
+    data = json.dumps(page_data(gps), separators=(",", ":")).replace("</", "<\\/")
+    return (template.replace("__REPO__", REPO).replace("__COLAB__", COLAB).replace("__LEAFLET__", LEAFLET)
+            .replace("<!--DATA-->", f"<script>const SITE = {data};</script>"))
 
 
 # The exposure map: heat of per-second counts (or the riding context) as coloured lines over all rides, and the events.
@@ -383,8 +349,27 @@ riding context, traffic signals, signs (typed and read) and licence plates. Box 
 # the colours are the same at every zoom.
 EXPOSURE_MAP_JS = """
 const $ = s => document.querySelector(s);
+// the map's tiles; where tile.openstreetmap.org cannot be reached (some networks do not resolve it, and take seconds
+// to say so) - no tile in TILE_WAIT_MS, or more failing than loading (a few may come from the browser's cache) - the
+// same map data from a second server
+const TILE_WAIT_MS = 3000;
+function baseTiles(m, tiles) {
+  const layer = L.tileLayer(tiles.url, {attribution: tiles.credit, maxZoom: 19}).addTo(m);
+  let loads = 0, errors = 0, swapped = false;
+  const swap = () => {
+    if (swapped || !tiles.fallback) return;
+    swapped = true;
+    m.attributionControl.removeAttribution(tiles.credit).addAttribution(tiles.fallback.credit);
+    layer.options.attribution = tiles.fallback.credit;
+    layer.setUrl(tiles.fallback.url);
+  };
+  layer.on("tileload", () => { loads++; });
+  layer.on("tileerror", () => { if (++errors > loads) swap(); });
+  setTimeout(() => { if (!loads) swap(); }, TILE_WAIT_MS);
+  return layer;
+}
 const map = L.map("map", {preferCanvas: true});
-L.tileLayer(TILE_URL, {attribution: TILE_CREDIT, maxZoom: 19}).addTo(map);
+baseTiles(map, TILES);
 const EVENT_COLOURS = {close_pass_under_1p5m: "#ff4d4f", oncoming_close_pass: "#d36bff",
   vehicle_close_in_my_lane: "#ffd60a", overtaken_by_vehicle: "#f2f2f2"};  // apart from the riding-context colours
 const CELL_M = 20, LEVELS = 32;
@@ -471,17 +456,21 @@ def map_page() -> str:
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Exposure map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{LEAFLET}/leaflet.css">
 <style>
 :root {{ --panel:rgba(22,22,21,0.92); --ink:#ececea; --muted:#a3a39d; --line:#3a3a36; --accent:#63a4e8; }}
 * {{ box-sizing:border-box; }}
-html, body {{ margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 system-ui, sans-serif; }}
+html, body {{ margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; }}
+.plate {{ display:inline-block; background:#1f6e42; color:#fff; font:700 .85rem "Overpass", sans-serif; padding:4px 9px 2px;
+  border-radius:6px; box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; margin-bottom:10px; }}
 #map {{ position:absolute; inset:0; background:#0e0e0d; }}
 #map .leaflet-tile-pane {{ filter:{DARK_TILES}; }}
 .panel {{ position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-width:calc(100% - 24px);
   max-height:calc(100% - 24px); overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px;
   padding:14px 16px; }}
-.panel h1 {{ font-size:18px; margin:0 0 4px; }} .panel p {{ margin:6px 0; }}
+.panel h1 {{ font:800 22px/1.1 "Overpass", sans-serif; margin:0 0 4px; }} .panel p {{ margin:6px 0; }}
 .muted {{ color:var(--muted); font-size:13px; }} a {{ color:var(--accent); }}
 .panel label {{ display:block; padding:3px 0; cursor:pointer; }}
 select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(--line); border-radius:6px; padding:4px 8px;
@@ -494,6 +483,7 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
 </style></head><body>
 <div id="map"></div>
 <div class="panel">
+  <a class="plate" href="../">Bike route vehicle typology</a>
   <h1>Exposure map</h1>
   <p class="muted">Each second of the rides placed by its GPS track, with what the camera saw then. Each ride's
   start and end are left out, within 400 to 800 m of them.</p>
@@ -501,12 +491,11 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
   <p><select id="ride" aria-label="Ride"><option value="-1">All rides</option></select></p>
   <label><input type="checkbox" id="events" checked> Close passes and overtakes</label>
   <div id="legend"></div>
-  <p class="muted"><a href="../">Back to the demos</a></p>
+  <p class="muted"><a href="../#demos">The demos</a></p>
 </div>
 <script src="{LEAFLET}/leaflet.js"></script>
 <script>
-const TILE_URL = {json.dumps(TILE_URL)};
-const TILE_CREDIT = {json.dumps(TILE_CREDIT)};
+const TILES = {json.dumps({"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK})};
 const HEAT_RAMP = {json.dumps(HEAT_RAMP)};{EXPOSURE_MAP_JS}
 </script></body></html>
 '''
@@ -514,6 +503,9 @@ const HEAT_RAMP = {json.dumps(HEAT_RAMP)};{EXPOSURE_MAP_JS}
 
 def write_pages(out: Path) -> None:
     rides = ride_gps()
+    (out / "assets").mkdir(exist_ok=True)
+    for name in ("site.css", "site.js"):
+        shutil.copyfile(SITE_FILES / name, out / "assets" / name)
     (out / "index.html").write_text(index_page(demo_gps(rides)), encoding="utf-8")
     if rides:
         (out / "map").mkdir(exist_ok=True)
@@ -523,6 +515,59 @@ def write_pages(out: Path) -> None:
     print(f"pages written: {len(rides)} rides with GPS")
 
 
+class RangeHandler(SimpleHTTPRequestHandler):
+    """A static file server that answers `Range: bytes=a-b` with 206 and that part of the file, so video seeks."""
+
+    def send_head(self):  # type: ignore[override]
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+        path = Path(self.translate_path(self.path))
+        if not match or not path.is_file() or not any(match.groups()):
+            return super().send_head()
+        size = path.stat().st_size
+        first, last = match.groups()
+        start = int(first) if first else max(0, size - int(last))
+        end = min(int(last), size - 1) if first and last else size - 1
+        if start >= size or start > end:
+            self.send_error(416, "Requested range not satisfiable")
+            return None
+        f = path.open("rb")
+        f.seek(start)
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        self.range_left = end - start + 1
+        return f
+
+    def copyfile(self, source, outputfile) -> None:  # type: ignore[override]
+        left = getattr(self, "range_left", None)
+        if left is None:
+            return super().copyfile(source, outputfile)
+        while left > 0:
+            chunk = source.read(min(left, 1 << 16))
+            if not chunk:
+                break
+            try:
+                outputfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):  # the browser cancelled the request: it seeked on
+                break
+            left -= len(chunk)
+        self.range_left = None
+
+    def end_headers(self) -> None:
+        if getattr(self, "range_left", None) is None:
+            self.send_header("Accept-Ranges", "bytes")
+        super().end_headers()
+
+
+def serve(directory: Path, port: int) -> None:
+    """Serve the built site on http://127.0.0.1:<port>, answering byte ranges like GitHub Pages."""
+    server = ThreadingHTTPServer(("127.0.0.1", port), partial(RangeHandler, directory=str(directory)))
+    print(f"serving {directory} on http://127.0.0.1:{port}", flush=True)
+    server.serve_forever()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, default=ROOT / "work" / "site")
@@ -530,7 +575,11 @@ def main() -> None:
     parser.add_argument("--render-again", action="store_true", help="Render the demos even if they are there")
     parser.add_argument("--pages-only", action="store_true",
                         help="Only write the pages and the map data (e.g. after bikesafe.gps); keep clips and review")
+    parser.add_argument("--serve", type=int, metavar="PORT", help="Serve the built site locally instead of building it")
     args = parser.parse_args()
+    if args.serve:
+        serve(args.out, args.serve)
+        return
     worktree(args.out)
     if not args.pages_only:
         render(args.out, args.render_again)

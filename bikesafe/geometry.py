@@ -25,6 +25,12 @@ import pandas as pd
 CAR_HEIGHT_M = 1.55
 CAR_BOX_WIDTH_M = 1.95  # rear/front view detection box, mirrors included
 DEFAULT_HFOV_DEG = 110.0
+# The 110 degree field of view is a guess. Against the GPS of five rides (bikesafe.gps --calibrate), distances ahead
+# and speeds came out 1.5-1.7 times too short: the true focal length is that much longer (a field of view nearer 80
+# degrees). A ride's calibration carries the measured factor (metric_scale); a ride with no GPS takes these, the
+# rides' median. The night flow also reads the forward speed low, beyond that (flow_scale).
+DEFAULT_METRIC_SCALE, DEFAULT_FLOW_SCALE = 1.58, 1.06
+EGO_MOVING_MPS = 1.6  # the rider moves faster than this
 
 
 @dataclass
@@ -37,9 +43,16 @@ class Calibration:
     height_ratio: float  # camera height / car height, the slope k in  d = k * box_h
     cam_height_m: float
     lateral_height_m: float  # effective camera height for lateral offsets, from rear-view car widths
-    focal_px: float
+    focal_px: float  # from the assumed field of view; image-space views (the bird's-eye lane view) are measured with it
     inliers: int
     residual_px: float
+    metric_scale: float = 1.0  # true focal length / focal_px, measured against GPS speed (bikesafe.gps --calibrate)
+    flow_scale: float = 1.0  # the flow's forward rate is this much too low (night), measured against GPS speed
+
+    @property
+    def metric_focal_px(self) -> float:
+        """The focal length for metric distances, speeds and angles."""
+        return self.focal_px * self.metric_scale
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -144,7 +157,8 @@ def ego_motion(frames: np.ndarray, grid: np.ndarray, calib: Calibration, smooth_
         if abs(g[i]) > 2e-6:
             foe[i] = cb[0] / g[i]
 
-    ego = pd.DataFrame({"frame": frames, "g": g, "yaw_px_s": r, "u_foe_raw": foe, "fit_quality": quality})
+    ego = pd.DataFrame({"frame": frames, "g": g * calib.flow_scale, "yaw_px_s": r, "u_foe_raw": foe,
+                        "fit_quality": quality})
     window = max(3, int(round(smooth_s * calib.fps)) | 1)
     ego["g_smooth"] = ego.g.rolling(window, center=True, min_periods=2).median()
     moving = ego.g_smooth > ego_moving_threshold(calib)
@@ -154,11 +168,11 @@ def ego_motion(frames: np.ndarray, grid: np.ndarray, calib: Calibration, smooth_
     ego["u_foe"] = heading.rolling(long_window, center=True, min_periods=3).median().ffill().bfill().fillna(calib.width / 2)
     ego["yaw_smooth"] = ego.yaw_px_s.rolling(window, center=True, min_periods=2).median()
     ego["ego_moving"] = moving
-    ego["ego_speed_mps"] = ego.g_smooth * calib.focal_px * calib.cam_height_m
+    ego["ego_speed_mps"] = ego.g_smooth * calib.metric_focal_px * calib.cam_height_m
     # cumulative rider pose: how far it has advanced and how far it has turned (radians), for world-frame trajectories
     dt = 1.0 / calib.fps
     ego["advance_m"] = (ego.ego_speed_mps.fillna(0) * dt).cumsum()
-    ego["turn_rad"] = (ego.yaw_smooth.fillna(0) * dt).cumsum() / calib.focal_px
+    ego["turn_rad"] = (ego.yaw_smooth.fillna(0) * dt).cumsum() / calib.metric_focal_px
     return ego
 
 
@@ -166,7 +180,7 @@ def ego_from_tracking(raw: pd.DataFrame, calib: Calibration, smooth_s: float = 1
     """Smooth the per-frame Lucas-Kanade fits from bikesafe.egomotion into the columns used downstream."""
     ego = pd.DataFrame({
         "frame": raw.frame,
-        "g": raw.g * calib.fps,
+        "g": raw.g * calib.fps * calib.flow_scale,
         "yaw_px_s": raw.yaw * calib.fps,
         "u_foe_raw": raw.u_foe,
         "fit_quality": (raw.inliers / raw.n_points.where(raw.n_points > 0)).fillna(0.0),
@@ -182,16 +196,16 @@ def ego_from_tracking(raw: pd.DataFrame, calib: Calibration, smooth_s: float = 1
                     .ffill().bfill().fillna(calib.width / 2))
     ego["yaw_smooth"] = ego.yaw_px_s.rolling(window, center=True, min_periods=2).median().fillna(0.0)
     ego["ego_moving"] = moving
-    ego["ego_speed_mps"] = ego.g_smooth * calib.focal_px * calib.cam_height_m
+    ego["ego_speed_mps"] = ego.g_smooth * calib.metric_focal_px * calib.cam_height_m
     # cumulative rider pose: how far it has advanced and how far it has turned (radians), for world-frame trajectories
     dt = 1.0 / calib.fps
     ego["advance_m"] = (ego.ego_speed_mps.fillna(0) * dt).cumsum()
-    ego["turn_rad"] = (ego.yaw_smooth.fillna(0) * dt).cumsum() / calib.focal_px
+    ego["turn_rad"] = (ego.yaw_smooth.fillna(0) * dt).cumsum() / calib.metric_focal_px
     return ego
 
 
-def ego_moving_threshold(calib: Calibration, speed_mps: float = 1.0) -> float:
-    return speed_mps / (calib.focal_px * calib.cam_height_m)
+def ego_moving_threshold(calib: Calibration, speed_mps: float = EGO_MOVING_MPS) -> float:
+    return speed_mps / (calib.metric_focal_px * calib.cam_height_m)
 
 
 def rolling_slope(df: pd.DataFrame, key: str, t: str, y: str, window: int, min_periods: int = 4) -> pd.Series:
@@ -232,7 +246,7 @@ def detection_kinematics(dets: pd.DataFrame, ego: pd.DataFrame, calib: Calibrati
     df["x_inner_rel"] = (inner_u - df.u_foe) / df.d_eff
     df["x_center_m"] = df.x_center_rel * calib.lateral_height_m
     df["x_inner_m"] = df.x_inner_rel * calib.lateral_height_m
-    df["z_m"] = calib.focal_px * calib.cam_height_m / df.d_eff
+    df["z_m"] = calib.metric_focal_px * calib.cam_height_m / df.d_eff
     # Inverse depth is only trustworthy while the whole vehicle is inside the frame: once a box is clipped its
     # apparent size stops growing, which otherwise makes a closely passed parked car look like it moves with the rider.
     df["geom_ok"] = (
@@ -244,18 +258,18 @@ def detection_kinematics(dets: pd.DataFrame, ego: pd.DataFrame, calib: Calibrati
     window = max(5, int(round(window_s * fps)) | 1)
     # Along-road speed over ground in (f*h)/s:  d(1/d)/dt = (V_obj - V_ego)/(f*h)  and  g = V_ego/(f*h).
     df["v_along_rel"] = df.g_smooth + rolling_slope(df, "track_id", "time_s", "inv_d", window)
-    df["v_along_mps"] = (df.v_along_rel * calib.focal_px * calib.cam_height_m).where(df.geom_ok)
+    df["v_along_mps"] = (df.v_along_rel * calib.metric_focal_px * calib.cam_height_m).where(df.geom_ok)
     # Independent estimate from the dense-flow expansion of the vehicle body (large boxes only).
     scale_rate = (df.obj_scale * fps).where(df.obj_n >= 36)
     scale_rate = scale_rate.groupby(df.track_id, sort=False).transform(
         lambda s: s.rolling(window, center=True, min_periods=3).median())
-    df["v_along_flow_mps"] = (df.g_smooth - scale_rate / df.d_eff) * calib.focal_px * calib.cam_height_m
+    df["v_along_flow_mps"] = (df.g_smooth - scale_rate / df.d_eff) * calib.metric_focal_px * calib.cam_height_m
 
     # Lateral speed from the image-angle rate, which is insensitive to depth jitter: a static point drifts at
     # du/dt = g*d*(u - u_foe) plus the wide-angle yaw shift; the residual converts to metres with h_x/d.
     u_ok = df.u_c.where(~(df.trunc_left | df.trunc_right))
     du_dt = rolling_slope(df.assign(u_ok=u_ok), "track_id", "time_s", "u_ok", window)
-    x_norm = (df.u_c - W / 2) / calib.focal_px
+    x_norm = (df.u_c - W / 2) / calib.metric_focal_px
     static_du = df.g_smooth * df.d_eff * (df.u_c - df.u_foe) + df.yaw_smooth * (1 + x_norm ** 2)
     df["v_lat_mps"] = (du_dt - static_du) * calib.lateral_height_m / df.d_eff
     df["closing_mps"] = df.ego_speed_mps - df.v_along_mps

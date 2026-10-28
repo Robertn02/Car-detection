@@ -109,6 +109,19 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
    - *Self-calibration.* Cars are all about the same height, so across thousands of boxes the wheel row grows
      linearly with box height. The intercept is the horizon and the slope is the camera height (~1.1 m here). Box
      widths of cars seen square-on give the lateral scale. No manual calibration is needed per video.
+   - *Metric scale, against GPS (version 8).* The focal length comes from an assumed 110 degree field of view, and
+     distances ahead and speeds scale with it. On the five rides with a Strava track, `python -m bikesafe.gps
+     --calibrate` measures how far off they are, two ways: parked cars stand still, so the distance to them shrinks
+     at the rider's GPS speed (distances ahead were 1.53-1.67 times too short: the true field of view
+     is nearer 80 degrees), and the rider's speed from the video against the GPS speed, which also needs the flow's
+     forward rate raised by 0.95-1.06 by day and up to 1.22 at night. A ride with
+     few parked cars passed (at night) is pulled towards the pooled distance factor. The factors go to
+     `results/corpus/metric_calibration.json` and `bikesafe.tracks` applies them: distances ahead, speeds and the
+     rider's turn angles are in metres (a ride without GPS, or a new video, takes the median, x1.58).
+     Lateral distances come from car widths and were already in metres. The bird's-eye lane view keeps the assumed
+     focal length it was measured with. Thresholds set on the earlier scale (the 15 m where relations were checked,
+     the 8 m an overtake comes within, the stopped and static speeds) are the same ones in true metres (x 1.6:
+     25 m, 13 m, ...).
    - *Vehicle motion.* A parked car's wheel row changes exactly as the static road predicts. The difference gives
      each vehicle's own along-road speed (sign = same way / oncoming). Its yaw-corrected lateral drift gives crossing
      motion. Lateral offset from the rider's heading gives lane position.
@@ -140,16 +153,16 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      camera is still, so image motion is the vehicle's own: sideways from the body flow against the ground beside it,
      along the road from the body's expansion times its distance (median over 5 samples, so single noisy flow readings
      do not count). Features: share of the track seen while the rider is stopped, the median and 90th percentile of
-     that own speed, and the share of it above 1 m/s - queued, crossing and turning traffic moves off, parked cars do
-     not. Over 5 seeds (extra trees, leave-one-video-out, 333 near labels) they raise accuracy from 0.709 (v5) to
-     0.718 overall and from 0.78 to 0.85 on the 61 vehicles seen mostly while the rider was stopped (crossing-traffic
-     F1 0.69 to 0.72; `feature_comparison_5_seeds.csv`, which `scripts/compare_features.py` writes).
+     that own speed, and the share of it above 1.6 m/s - queued, crossing and turning traffic moves off, parked cars do
+     not. Over 5 seeds (extra trees, leave-one-video-out, 338 labels within 25 m) they raise accuracy from 0.710 (v5)
+     to 0.715 overall and from 0.82 to 0.85 on the 62 vehicles seen mostly while the rider was stopped
+     (crossing-traffic F1 0.71 to 0.73; `feature_comparison_5_seeds.csv`, which `scripts/compare_features.py` writes).
    - *What the model uses (version 8).* Once every ride had been through the lane and kerb pass in full - those
      comparisons had lane and kerb features only where the 60 s test windows had them - the lane-paint (v3) and kerb
      (v5) features lowered the score instead of raising it, and the model now uses geometry, flow and the stopped-rider
-     motion only. Over 5 seeds (333 near labels): v8 accuracy 0.733 and macro-F1 0.627 (v7 0.718 / 0.618), 86% right on
-     the vehicles seen while the rider was stopped (v7 85%, v2+flow alone 78%), 45.0 moving vehicles called parked
-     (v7 48.2). The lane and kerb features are still computed and kept in `tracks_typed.csv`.
+     motion only. Over 5 seeds (338 labels within 25 m): v8 accuracy 0.727 and macro-F1 0.640 (v7 0.715 / 0.628), 85%
+     right on the vehicles seen while the rider was stopped (v7 85%, v2+flow alone 82%), 46.2 moving vehicles called
+     parked (v7 47.8). The lane and kerb features are still computed and kept in `tracks_typed.csv`.
    - *Not a vehicle.* The CLIP crop embeddings are also scored zero-shot against delivery robots, scooters and
      bicycles, pedestrians, bins, dumpsters and benches, which the COCO detector boxes as cars or motorcycles
      (`not_vehicle`). By day it separates them; at night, on a single dark crop, real vehicles score high too (about
@@ -181,22 +194,23 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      parked, and tracks whose box switches between vehicles (now `unclear`). The changes are in `track_labels.csv`
      (`labeler` = `claude-visual-review+audit`, the old label in `notes`). 48 further near-range tracks were reviewed
      the same way (33 usable, mostly oncoming, side-road and same-direction traffic, which were scarce).
-   - *Where it stands (October 2026, all six rides through the full lane and sign pass).* The deployed model (extra
-     trees, v8 features: geometry, flow and the vehicle's own motion while the rider is stopped, trained on all 403
-     labelled tracks) is right on 71.3% of the 321 labelled vehicles within 15 m, in leave-one-video-out validation
-     (macro-F1 0.60, against 0.51 for the pipeline before the label audit); by closest approach 77% within 5 m, 75% at
-     5-10 m, 54% at 10-15 m (`relation_lovo_predictions.csv`, `relation_accuracy_by_distance.csv`). Per class F1
-     within 15 m: parked 0.78, side road 0.73, oncoming 0.59, other lane 0.58, in my lane 0.32 - the last from only 13
-     near labels. The same model trained on the near labels alone scores 72.9% (macro-F1 0.64;
-     `relation_within_near_z` in `evaluation_summary.json`), and 73.3% over 5 seeds on the 333 near labels the tracks
-     match now; it is not the deployed one. The model is chosen on the same held-out predictions it is scored on, so
-     these figures are slightly optimistic. Of the 689 counted vehicles on the six rides seen mostly while the rider
-     waited, it calls 4.5% parked (70% of all counted vehicles are parked) and 90% side road or crossing; of the 52
-     such labelled vehicles within 15 m it gets 92% right. With the lane and kerb pass over whole rides, the lane-paint and kerb features lowered the
-     score (5 seeds, near macro-F1: v2+flow 0.631, v3 0.612, v5 0.600, v7 0.607; `feature_comparison_5_seeds.csv`) -
+   - *Where it stands (October 2026, all six rides through the full lane and sign pass, distances calibrated against
+     GPS).* The deployed model (extra trees, v8 features: geometry, flow and the vehicle's own motion while the rider
+     is stopped, trained on all 434 labelled tracks) is right on 71.4% of the 357 labelled vehicles within 25 m, in
+     leave-one-video-out validation (macro-F1 0.60, against 0.51 for the pipeline before the label audit); by closest
+     approach 77% within 8 m, 75% at 8-16 m, 55% at 16-25 m (`relation_lovo_predictions.csv`,
+     `relation_accuracy_by_distance.csv`). Per class F1 within 25 m: parked 0.79, side road 0.73, other lane 0.58,
+     oncoming 0.53, in my lane 0.38 - the last from only 15 near labels. The first human review round (October 28: 20
+     vehicles from the queue of new, low-confidence ones, 19 of them relations) added harder cases: before it the
+     model scored 72.5% of 338, and before the GPS calibration 71.3% on the matching range (then "15 m"). The model trained on the near labels alone scores 72.3% (macro-F1 0.62; `relation_within_near_z`
+     in `evaluation_summary.json`); it is not the deployed one. The model is chosen on the same held-out predictions
+     it is scored on, so these figures are slightly optimistic. Of the 708 counted vehicles on the six rides seen
+     mostly while the rider waited, it calls 4.1% parked (69% of all counted vehicles are parked) and 94% side road
+     or crossing; of the 57 such labelled vehicles within 25 m it gets 91% right. With the lane and kerb pass over whole rides, the lane-paint and kerb features lowered the
+     score (5 seeds, near macro-F1: v2+flow 0.624, v3 0.614, v5 0.611, v7 0.628; `feature_comparison_5_seeds.csv`) -
      the same noisy paint that calls shared roads bike lanes, below - so v8 leaves them out; they stay in
-     `tracks_typed.csv`. The learning curve (`learning_curve.png`: macro-F1 0.54, 0.57, 0.60, 0.65 at 67, 133, 200,
-     267 training labels) is still rising, so reviewed labels (step 9) are the most direct way to improve it. A veto
+     `tracks_typed.csv`. The learning curve (`learning_curve.png`, on the features before the calibration: macro-F1
+     0.54, 0.57, 0.60, 0.65 at 67, 133, 200, 267 training labels) is still rising, so reviewed labels (step 9) are the most direct way to improve it. A veto
      of "parked" on the flow consistency shares flagged as many truly parked cars as moving ones and was not adopted.
    - The riding context is scored for the CLIP probe alone and for the probe with the lane-paint detector deciding
      bike lane vs shared road. With the full-ride lane pass, on 307 labelled frames the probe alone reached accuracy
@@ -233,7 +247,7 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      tracks' class probabilities; `per_min_*`, `vehicles_*`, the per-second counts and the events use vehicles, and
      each event is reported once per vehicle.
    - Overtakes are found from geometry, not from the relation: a vehicle followed for at least a second that comes
-     within 8 m and pulls away beside the rider, its side gap above 0 and up to 3.5 m, at most 15 m/s faster. Without
+     within 13 m and pulls away beside the rider, its side gap above 0 and up to 3.5 m, at most 24 m/s faster. Without
      those limits (before October 2026) half the overtakes and close passes were sub-second fragments of parked cars
      passed close by, whose box seemed to pull away, and a few were mismeasured at up to 130 m/s: 178 overtakes and
      67 close passes on the six rides, now 45 and 25. Stop-sign objects less than 3 s apart are one sign the object
@@ -251,15 +265,30 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      second. A line found on two of three consecutive samples is predicted for every frame from the samples around
      it and then laid on that frame's paint: the handlebar camera rolls and pitches between samples, so lines drawn
      from the samples alone sat beside their paint, and seams the segmenter took for paint were drawn as lines. Along
-     the predicted line each frame is searched for a bright stripe as wide as lane paint at that distance (a kerb, a
-     white car or a sunlit patch is wider); a robust straight-line fit through the stripes moves the line part of the
-     way there. A line without paint under it in most recent frames fades out, lines fade in and out over a quarter
-     of a second, and they are drawn as strips of paint in perspective, down to the bottom of the picture where the
-     paint continues, behind the vehicles and not across a crosswalk. Box labels are short ("same way 9m"), placed
-     nearest vehicle first so none covers another (a far vehicle with no room keeps its box but no label), and the
-     banner shows the GPS speed where the ride has a track and the riding context most common over 7 s.
+     the line each frame is searched for a bright stripe as wide as lane paint at that distance (a kerb, a white car
+     or a sunlit patch is wider), and a robust straight-line fit through the stripes of the last six frames moves the
+     line part of the way there: the line stays put in the picture while the dashes of a broken line slide along it,
+     so a few frames together cover it where one frame finds a dash or two. A line keeps one identity by where it is
+     in the picture, not by the samples' numbering (which restarts whenever a sample misses it); it appears once paint
+     is found under it in most recent frames - along at least a quarter of the rows that can be seen, so a seam or a
+     faded edge with a stripe here and there does not count - and goes only when that falls well below, or a while
+     after the samples stop reporting it, not while a vehicle hides its paint. Its ends ease towards the samples'
+     extent instead of jumping with it. Only the rider's own lane is drawn: the nearest line on each side, by where
+     the line meets the rider (its slope in the picture, which does not waver with the heading estimate), skipping
+     paint inside the lane - an arrow's shaft, a bike symbol, a seam - that lies less than a lane's width (1.3 m)
+     from the line opposite. A farther line does not stand in while the nearer one is faint, so three or four lines
+     are never shown. No line is drawn through a junction (a crosswalk across the rider's path, or six or more short
+     lines at once - crosswalk bars; a buffered bike lane's long double lines are not a junction), in a turn (the
+     heading turning faster than 12 degrees a second) or where no sample reports a line beside the rider; lines come
+     back only once the lanes have been steady for 1.5 s, and fade in. A line within 0.5 m of the rider's path is not
+     a side either: what lies there is mostly the glare of the bike's own light at night, an arrow or a seam. On four
+     demo windows lines appear or go 17-33 times a minute (40-78 before), most of them now these deliberate hides,
+     and never three at once. Lines are drawn as strips of paint in perspective, down to the bottom of the picture
+     where the paint continues, behind the vehicles. Box labels are short ("same way 9m"), placed nearest vehicle
+     first so none covers another (a far vehicle with no room keeps its box but no label), and the banner shows the GPS speed where the ride has a track and the riding context most common over 7 s.
      Clips are H.264 (libx264, CRF 20, from the ffmpeg bundled with `imageio-ffmpeg`), so they play in a browser and
-     in slides; the web demos are CRF 23 capped at 10 Mbit/s so they stream (`scripts/build_site.py`).
+     in slides; the web demos are 2 minutes at CRF 23 capped at 5.5 Mbit/s, so each streams and stays under GitHub's
+     100 MB a file (`scripts/build_site.py`).
 9. **Human review loop** - `bikesafe.review`
    - `python -m bikesafe.review` serves a review page on the local machine (http://127.0.0.1:8765). It is the
      annotation framework of the pipeline: the models' answers are the starting point, a person confirms or
@@ -279,7 +308,7 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
    - *Vehicles.* Each vehicle is shown as a looping clip of its track at the video's frame rate (its box magenta, the
      others grey; tracks over 8 s play faster) with a zoom,
      the model's probabilities and the rule baseline's answer. Keys 1-5 pick the relation, Enter accepts the model, U
-     marks it unclear, N not a vehicle, Z undoes. The "new" queue ranks unlabelled vehicles within 15 m by how likely
+     marks it unclear, N not a vehicle, Z undoes. The "new" queue ranks unlabelled vehicles within 25 m by how likely
      the model is wrong - low probability, and conflicts with the physics (called parked while in the rider's path, or
      while the flow says it moves with or toward the rider; called oncoming while its rear is seen; rules disagree) -
      and spreads them over rides and time, so one traffic jam does not fill the queue (active learning: each review is
@@ -373,12 +402,10 @@ to `bikesafe.perceive`.
 
 ## Known limitations
 
-- Metric distances and speeds assume a 110 degree horizontal field of view for the focal length. Relations do not
-  depend on it, because they use ratios, but absolute values do: against the GPS of the five rides with a Strava track
-  (`gps_1s.csv`), the speed measured from the video is 0.53-0.63 of the GPS speed (median per ride, seconds above
-  2 m/s), so `ego_speed_mps` reads low and distances may too, and the 1.5 m close-pass gap is not yet checked against
-  a known distance. The camera's lateral scale also varies between rides (`lateral_height_m` 1.06-1.47 in the
-  calibrations). Calibrating the focal length and camera height against the GPS speed is the next step.
+- Distances ahead and speeds are calibrated against GPS (step 5) per ride; the ride without a Strava track (005)
+  takes the median factor. Lateral distances, and with them the 1.5 m close-pass gap, come from the width of cars
+  seen square-on (1.95 m with mirrors) and are not checked against GPS, which cannot measure them; the lateral scale
+  also varies between rides (`lateral_height_m` 1.06-1.47 in the calibrations).
 - Flat-road geometry. Hills and strong bike pitch bias distances and the bird's-eye view until the rolling horizon
   re-settles; lane lines are only judged 2.5-14 m ahead for that reason.
 - Night footage reduces detection recall and flow quality, and lane paint is only visible in the headlight.
@@ -389,11 +416,12 @@ to `bikesafe.perceive`.
   typed from appearance only, and street-name signs are the most frequent confusion. The posted speed limit is the
   last speed-limit sign read and is not map-matched, so it can outlive a turn onto another street (it expires after
   3 minutes).
-- The labels were produced by AI-assisted visual review (482 of the 497 rows of `track_labels.csv`, including the
-  October audit and batch) and should be spot-checked by a human reviewer (`labeler` column; the review page's
-  verify queue shows them); the audit found about half of the physics-contradicted labels
+- The labels were produced by AI-assisted visual review (482 of the 517 rows of `track_labels.csv`, including the
+  October audit and batch; 20 more were reviewed by a person on the review page on October 28) and should be
+  spot-checked by a human reviewer (`labeler` column; the review page's verify queue shows them); the audit found
+  about half of the physics-contradicted labels
   wrong, so the rest also carry some noise. The pipeline retrains from the CSVs.
-- The overlay labels a vehicle only within 25 m (relations are validated within 15 m) and adds "?" where the model
+- The overlay labels a vehicle only within 40 m (relations are validated within 25 m) and adds "?" where the model
   gives its relation less than 45% probability.
 - Vehicle ids join a vehicle only across gaps of up to 2 s. A vehicle that leaves the view and returns later (for
   example leapfrogging between traffic lights) is a new vehicle; the opt-in plate audit counts such returns.
