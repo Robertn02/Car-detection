@@ -196,17 +196,17 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      the same way (33 usable, mostly oncoming, side-road and same-direction traffic, which were scarce).
    - *Where it stands (October 2026, all six rides through the full lane and sign pass, distances calibrated against
      GPS).* The deployed model (extra trees, v8 features: geometry, flow and the vehicle's own motion while the rider
-     is stopped, trained on all 415 labelled tracks) is right on 72.5% of the 338 labelled vehicles within 25 m, in
-     leave-one-video-out validation (macro-F1 0.63, against 0.51 for the pipeline before the label audit); by closest
-     approach 76% within 8 m, 76% at 8-16 m, 59% at 16-25 m (`relation_lovo_predictions.csv`,
-     `relation_accuracy_by_distance.csv`). Per class F1 within 25 m: parked 0.79, side road 0.74, other lane 0.61,
-     oncoming 0.60, in my lane 0.40 - the last from only 15 near labels. Before the calibration the same model scored
-     71.3% on the matching range (then "15 m"): true metres helped a little, as each ride's scale is now the same. The
-     model trained on the near labels alone scores 71.9% (macro-F1 0.64; `relation_within_near_z` in
-     `evaluation_summary.json`); it is not the deployed one. The model is chosen on the same held-out predictions it
-     is scored on, so these figures are slightly optimistic. Of the 708 counted vehicles on the six rides seen mostly
-     while the rider waited, it calls 3.4% parked (69% of all counted vehicles are parked) and 95% side road or
-     crossing; of the 56 such labelled vehicles within 25 m it gets 91% right. With the lane and kerb pass over whole rides, the lane-paint and kerb features lowered the
+     is stopped, trained on all 434 labelled tracks) is right on 71.4% of the 357 labelled vehicles within 25 m, in
+     leave-one-video-out validation (macro-F1 0.60, against 0.51 for the pipeline before the label audit); by closest
+     approach 77% within 8 m, 75% at 8-16 m, 55% at 16-25 m (`relation_lovo_predictions.csv`,
+     `relation_accuracy_by_distance.csv`). Per class F1 within 25 m: parked 0.79, side road 0.73, other lane 0.58,
+     oncoming 0.53, in my lane 0.38 - the last from only 15 near labels. The first human review round (October 28: 20
+     vehicles from the queue of new, low-confidence ones, 19 of them relations) added harder cases: before it the
+     model scored 72.5% of 338, and before the GPS calibration 71.3% on the matching range (then "15 m"). The model trained on the near labels alone scores 72.3% (macro-F1 0.62; `relation_within_near_z`
+     in `evaluation_summary.json`); it is not the deployed one. The model is chosen on the same held-out predictions
+     it is scored on, so these figures are slightly optimistic. Of the 708 counted vehicles on the six rides seen
+     mostly while the rider waited, it calls 4.1% parked (69% of all counted vehicles are parked) and 94% side road
+     or crossing; of the 57 such labelled vehicles within 25 m it gets 91% right. With the lane and kerb pass over whole rides, the lane-paint and kerb features lowered the
      score (5 seeds, near macro-F1: v2+flow 0.624, v3 0.614, v5 0.611, v7 0.628; `feature_comparison_5_seeds.csv`) -
      the same noisy paint that calls shared roads bike lanes, below - so v8 leaves them out; they stay in
      `tracks_typed.csv`. The learning curve (`learning_curve.png`, on the features before the calibration: macro-F1
@@ -270,13 +270,21 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      line part of the way there: the line stays put in the picture while the dashes of a broken line slide along it,
      so a few frames together cover it where one frame finds a dash or two. A line keeps one identity by where it is
      in the picture, not by the samples' numbering (which restarts whenever a sample misses it); it appears once paint
-     is found under it in most recent frames and goes only when that falls well below, at a junction, or a while
-     after the samples stop reporting it - not while a vehicle hides its paint. Its ends ease towards the samples'
-     extent instead of jumping with it. On three test windows (day, green bike lane, night) the share of frames with
-     a line shown rose from 72-89% to 83-97% and lines appear or go about half as often. Lines are drawn as strips of
-     paint in perspective, down to the bottom of the picture where the paint continues, behind the vehicles and not
-     across a crosswalk. Box labels are short ("same way 9m"), placed
-     nearest vehicle first so none covers another (a far vehicle with no room keeps its box but no label), and the
+     is found under it in most recent frames - along at least a quarter of the rows that can be seen, so a seam or a
+     faded edge with a stripe here and there does not count - and goes only when that falls well below, or a while
+     after the samples stop reporting it, not while a vehicle hides its paint. Its ends ease towards the samples'
+     extent instead of jumping with it. Only the rider's own lane is drawn: the nearest line on each side, by where
+     the line meets the rider (its slope in the picture, which does not waver with the heading estimate), skipping
+     paint inside the lane - an arrow's shaft, a bike symbol, a seam - that lies less than a lane's width (1.3 m)
+     from the line opposite. A farther line does not stand in while the nearer one is faint, so three or four lines
+     are never shown. No line is drawn through a junction (a crosswalk across the rider's path, or six or more short
+     lines at once - crosswalk bars; a buffered bike lane's long double lines are not a junction), in a turn (the
+     heading turning faster than 12 degrees a second) or where no sample reports a line beside the rider; lines come
+     back only once the lanes have been steady for 1.5 s, and fade in. A line within 0.5 m of the rider's path is not
+     a side either: what lies there is mostly the glare of the bike's own light at night, an arrow or a seam. On four
+     demo windows lines appear or go 17-33 times a minute (40-78 before), most of them now these deliberate hides,
+     and never three at once. Lines are drawn as strips of paint in perspective, down to the bottom of the picture
+     where the paint continues, behind the vehicles. Box labels are short ("same way 9m"), placed nearest vehicle first so none covers another (a far vehicle with no room keeps its box but no label), and the
      banner shows the GPS speed where the ride has a track and the riding context most common over 7 s.
      Clips are H.264 (libx264, CRF 20, from the ffmpeg bundled with `imageio-ffmpeg`), so they play in a browser and
      in slides; the web demos are 2 minutes at CRF 23 capped at 5.5 Mbit/s, so each streams and stays under GitHub's
@@ -408,9 +416,10 @@ to `bikesafe.perceive`.
   typed from appearance only, and street-name signs are the most frequent confusion. The posted speed limit is the
   last speed-limit sign read and is not map-matched, so it can outlive a turn onto another street (it expires after
   3 minutes).
-- The labels were produced by AI-assisted visual review (482 of the 497 rows of `track_labels.csv`, including the
-  October audit and batch) and should be spot-checked by a human reviewer (`labeler` column; the review page's
-  verify queue shows them); the audit found about half of the physics-contradicted labels
+- The labels were produced by AI-assisted visual review (482 of the 517 rows of `track_labels.csv`, including the
+  October audit and batch; 20 more were reviewed by a person on the review page on October 28) and should be
+  spot-checked by a human reviewer (`labeler` column; the review page's verify queue shows them); the audit found
+  about half of the physics-contradicted labels
   wrong, so the rest also carry some noise. The pipeline retrains from the CSVs.
 - The overlay labels a vehicle only within 40 m (relations are validated within 25 m) and adds "?" where the model
   gives its relation less than 45% probability.
