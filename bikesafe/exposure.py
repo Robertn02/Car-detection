@@ -7,7 +7,8 @@ Outputs per video in results/corpus/<video>/:
                        the posted speed limit (Strava-joinable)
   events.csv           overtakes, close ego-lane vehicles, near crossing traffic, close oncoming, emergency candidates,
                        stop signs passed and waits at red lights
-  signs.csv            one row per distinct traffic sign / signal head seen, with the sign's type and text
+  signs.csv            one row per distinct traffic sign / signal head seen, with the sign's type and text (partial
+                       street names completed from those read in full elsewhere in the corpus, bikesafe.signs)
   vehicles.csv         one row per physical vehicle: its relation in words and how sure the model is, when it was
                        seen (local time), how close it came and on which side, its plate, and whether to check it -
                        the table to read first (tracks_typed.csv holds every track and all ~130 model features)
@@ -40,14 +41,22 @@ import pandas as pd
 
 from bikesafe.common import (RELATION_GROUP, RELATION_TEXT, RELATIONS, ROOT, SCENES, VEHICLE_CLASS_TEXT, read_json,
                               write_json)
-from bikesafe.infrastructure import object_instances, per_second_summary
+from bikesafe.infrastructure import object_instances, pass_complete, per_second_summary
 from bikesafe.plates import identity_audit, plates_on_pieces, vehicle_plates
 from bikesafe.scene import scene_probabilities
+from bikesafe.signs import NAMED_SIGNS, corpus_street_names
 from bikesafe.tracks import rule_relation
 
 MIN_VISIBLE_BOX_H = 20
 RELIABLE_Z_M = 15.0  # relations are validated within this range (results/typology/relation_accuracy_by_distance.csv)
 OVERTAKE_MAX_Z = 8.0  # metres; a passing vehicle is alongside the rider
+# An overtake is followed for at least a second (passing parked cars gave sub-second fragments that seemed to pull
+# away), passes beside the rider within about a lane's width (a box straddling the rider's heading, side gap 0, is in
+# the rider's path, not beside it) and no faster than any traffic here could (fragments gave up to 130 m/s).
+OVERTAKE_MIN_DET, OVERTAKE_MAX_GAP_M, OVERTAKE_MAX_DV = 12, 3.5, 15.0
+EGO_MOVING_MPS = 1.0  # the rider is moving above this speed
+MIN_SIGN_SAMPLES = 2  # a sign counted in the summary was seen on at least this many samples (half a second apart)
+SAME_STOP_S = 3.0  # stop-sign objects this close in time are one sign the object linker split
 EMERGENCY_SHORTLIST = 10
 RED_WAIT_MIN_S = 3  # a stop of at least this long with a red signal ahead counts as a wait at a red light
 MIN_SIGN_BOX_H = 18  # px; smaller sign detections are too far away to count as passed
@@ -133,14 +142,17 @@ def vehicle_summary(tracks: pd.DataFrame, start_local: str | None) -> pd.DataFra
         votes = t[proba].mul(t.n_det, axis=0).groupby(t.vehicle_id).sum()
         confidence = votes.max(axis=1) / votes.sum(axis=1).replace(0, np.nan)
     else:
-        confidence = pd.Series(np.nan, index=t.vehicle_id.unique())
+        confidence = pd.Series(np.nan, index=pd.Index(t.vehicle_id.unique(), name="vehicle_id"))  # rule-typed ride
     weight = t.n_det.astype(float)
-    closest = t.loc[t.groupby("vehicle_id").z_min.idxmin()].set_index("vehicle_id")
+    # the row of its closest approach (a vehicle never placed on the road, all z_min empty, keeps its first row)
+    closest = (t.sort_values("z_min", na_position="last", kind="stable").drop_duplicates("vehicle_id")
+               .set_index("vehicle_id").sort_index())  # in vehicle order, as the columns beside it
     g = t.groupby("vehicle_id")
     out = pd.DataFrame({
         "relation": g.vehicle_relation.first(),
         "confidence": confidence.round(3),
-        "vehicle_class": g.class_id.agg(lambda c: VEHICLE_CLASS_TEXT.get(int(c.mode().iloc[0]), "vehicle")),
+        "vehicle_class": t.groupby(["vehicle_id", "class_id"]).n_det.sum().unstack(fill_value=0).idxmax(axis=1).map(
+            lambda c: VEHICLE_CLASS_TEXT.get(int(c), "vehicle")),
         "t_start": g.t_start.min().round(2), "t_end": g.t_end.max().round(2),
         "closest_m": g.z_min.min().round(1),
         "lateral_at_closest_m": closest.x_inner_at_min_z.round(2),
@@ -160,8 +172,7 @@ def vehicle_summary(tracks: pd.DataFrame, start_local: str | None) -> pd.DataFra
             weight.groupby(t.vehicle_id).sum()).round(2)
     if "plate" in t:
         out["plate"] = g.plate.first()
-    validated = (out.closest_m <= RELIABLE_Z_M) & (out.box_h_max_px >= 35) & (out.duration_s >= 1.0)
-    out["counted"] = validated
+    out["counted"] = out.index.isin(counted(vehicle_table(t)).index)  # as the summary counts them
     reasons = np.where(out.confidence < CHECK_CONFIDENCE, "model unsure", "")
     if "not_vehicle_score" in out:
         reasons = np.where(out.not_vehicle_score >= 0.5, np.char.add(reasons.astype(str), "; may not be a vehicle"), reasons)
@@ -193,8 +204,9 @@ def timeline(kin: pd.DataFrame, tracks: pd.DataFrame, ego: pd.DataFrame, scene: 
     seconds = pd.RangeIndex(0, int(max(ego.time_s.max(), 0)) + 1, name="second")
     out = pd.DataFrame(index=seconds)
     ego_s = ego.assign(second=ego.time_s.astype(int)).groupby("second")
-    out["ego_speed_mps"] = ego_s.ego_speed_mps.median()
-    out["ego_moving"] = ego_s.ego_moving.mean() > 0.5
+    # a failed fit can come out below zero at a standstill; moving is judged from the same speed it reports
+    out["ego_speed_mps"] = ego_s.ego_speed_mps.median().clip(lower=0.0)
+    out["ego_moving"] = out.ego_speed_mps > EGO_MOVING_MPS
     scene_s = scene.assign(second=scene.time_s.astype(int)).groupby("second")
     for s in SCENES:
         out[f"p_{s}"] = scene_s[f"p_{s}"].mean()
@@ -207,7 +219,7 @@ def timeline(kin: pd.DataFrame, tracks: pd.DataFrame, ego: pd.DataFrame, scene: 
     counts = df.groupby(["second", "relation"]).vehicle_id.nunique().unstack(fill_value=0)
     for rel in RELATIONS:
         out[f"n_{rel}"] = counts[rel] if rel in counts else 0
-    out = out.fillna({f"n_{rel}": 0 for rel in RELATIONS})
+    out = out.fillna({f"n_{rel}": 0 for rel in RELATIONS}).astype({f"n_{rel}": int for rel in RELATIONS})
     near = df[df.z_m < 20]
     out["min_z_ego_lane_m"] = df[df.relation == "ego_lane"].groupby("second").z_m.min()
     out["min_lateral_adjacent_m"] = near[near.relation == "adjacent_same"].groupby("second").x_inner_m.apply(lambda s: s.abs().min())
@@ -230,10 +242,12 @@ def events(tracks: pd.DataFrame, kin: pd.DataFrame) -> pd.DataFrame:
                 "t_start": round(t.t_start, 2), "t_end": round(t.t_end, 2), "z_min_m": round(t.z_min, 1),
                 "x_inner_absmin_m": round(t.x_inner_absmin, 2)}
         # A real overtake passes beside the rider, so it must come close; otherwise "clearance" is just distance.
-        overtaking = (t.z_first < 15 and t.z_min <= OVERTAKE_MAX_Z and t.log_growth < -0.15 and t.n_det >= 4
-                      and t.ego_speed_med > 1.0 and t.v_along_med > t.ego_speed_med + 0.5)
+        clearance = abs(t.x_inner_at_min_z)
+        overtaking = (t.z_first < 15 and t.z_min <= OVERTAKE_MAX_Z and t.log_growth < -0.15
+                      and t.n_det >= OVERTAKE_MIN_DET and t.ego_speed_med > 1.0
+                      and t.ego_speed_med + 0.5 < t.v_along_med <= t.ego_speed_med + OVERTAKE_MAX_DV
+                      and 0 < clearance <= OVERTAKE_MAX_GAP_M)
         if overtaking:
-            clearance = abs(t.x_inner_at_min_z)
             rows.append({**base, "event": "overtaken_by_vehicle", "clearance_m": round(clearance, 2),
                          "side": "left" if t.x_at_min_z < 0 else "right",
                          "speed_difference_mps": round(t.v_along_med - t.ego_speed_med, 1)})
@@ -282,8 +296,12 @@ def infrastructure_events(signs: pd.DataFrame, line: pd.DataFrame) -> pd.DataFra
     """
     rows = []
     if len(signs):
-        stops = signs[(signs.category == "stop") & (signs.box_h_max >= MIN_SIGN_BOX_H)]
-        for s in stops.itertuples():
+        stops = signs[(signs.category == "stop") & (signs.box_h_max >= MIN_SIGN_BOX_H)].sort_values("t_first")
+        for s in stops.itertuples():  # one event per sign: the object linker splits a sign seen at a junction
+            if rows and s.t_first - rows[-1]["t_end"] <= SAME_STOP_S:
+                rows[-1]["t_end"] = round(max(rows[-1]["t_end"], s.t_last), 2)
+                rows[-1]["score"] = round(max(rows[-1]["score"], s.conf_max), 2)
+                continue
             rows.append({"event": "stop_sign", "t_start": round(s.t_first, 2), "t_end": round(s.t_last, 2),
                          "score": round(s.conf_max, 2), "object_id": int(s.object_id)})
     if "traffic_light_state" in line:
@@ -344,7 +362,8 @@ def summarise(video: str, tracks: pd.DataFrame, line: pd.DataFrame, ev: pd.DataF
         row["red_light_wait_seconds"] = int(waits.duration_s.sum()) if len(waits) else 0
         row["seconds_with_signal_ahead"] = int((line.n_signal_heads > 0).sum())
     if signs is not None and len(signs):
-        passed = signs[(signs.kind == "sign") & (signs.box_h_max >= MIN_SIGN_BOX_H)]
+        # seen on two samples or more: two in three signs seen once are part of a sign the linker split
+        passed = signs[(signs.kind == "sign") & (signs.box_h_max >= MIN_SIGN_BOX_H) & (signs.n_samples >= MIN_SIGN_SAMPLES)]
         row["signs_total"] = int(len(passed))
         for category in SIGN_SUMMARY:
             row[f"signs_{category}"] = int((passed.category == category).sum())
@@ -381,6 +400,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=ROOT / "results" / "corpus")
     args = parser.parse_args()
     relation_model, scene_probe = load_models(args.models)
+    street_names = corpus_street_names(args.analysis)
     summaries, scene_rows = [], []
     for analysis_dir in sorted(p for p in args.analysis.iterdir() if (p / "tracks.parquet").exists()):
         video = analysis_dir.name
@@ -392,11 +412,17 @@ def main() -> None:
                  else unknown_scene(int(max(ego.time_s.max(), 0)) + 1))
         tracks = type_tracks(pd.read_parquet(analysis_dir / "tracks.parquet"), scene, relation_model)
         infra, signs = None, pd.DataFrame()
-        if (analysis_dir / "lanes.parquet").exists():
+        if (analysis_dir / "lanes.parquet").exists() and not pass_complete(analysis_dir):
+            # a test window (--start-s / --duration-s) would give signals, signs and their events for part of the ride
+            print(f"{video}: the infrastructure pass covered only part of the ride - left out of the tables")
+        if pass_complete(analysis_dir):
             objects = pd.read_parquet(analysis_dir / "infrastructure.parquet")
             infra = per_second_summary(pd.read_parquet(analysis_dir / "lanes.parquet"), objects,
                                        int(max(ego.time_s.max(), 0)) + 1)
             signs = object_instances(objects[objects.kind.isin(["light", "sign"])])
+            signs["sign_text_read"] = signs.sign_text  # what OCR read; sign_text completes partial street names
+            named = signs.category.isin(NAMED_SIGNS) & (signs.sign_text.astype(str).str.len() > 0)
+            signs.loc[named, "sign_text"] = signs.loc[named, "sign_text"].astype(str).map(street_names)
         line = timeline(kin, tracks, ego, scene, calib.get("start_local"), infra)
         ev = events(tracks, kin)
         if infra is not None:

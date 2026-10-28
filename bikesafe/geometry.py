@@ -45,6 +45,9 @@ class Calibration:
         return asdict(self)
 
 
+MIN_CALIBRATION_CARS = 10  # whole, confidently detected car boxes the self-calibration needs
+
+
 def fit_horizon(dets: pd.DataFrame, width: int, height: int, fps: float, stride: int,
                 hfov_deg: float = DEFAULT_HFOV_DEG, seed: int = 0) -> Calibration:
     """Robustly fit wheel row = v_h + k * box height over confident, untruncated cars."""
@@ -55,6 +58,9 @@ def fit_horizon(dets: pd.DataFrame, width: int, height: int, fps: float, stride:
     )
     x = box_h[keep].to_numpy(float)
     y = dets.y2[keep].to_numpy(float)
+    if len(x) < MIN_CALIBRATION_CARS:
+        raise ValueError(f"cannot calibrate the camera: {len(x)} whole, confidently detected cars in the clip, "
+                         f"at least {MIN_CALIBRATION_CARS} are needed (a longer clip, or one with traffic)")
     rng = np.random.default_rng(seed)
     if len(x) > 20000:
         idx = rng.choice(len(x), 20000, replace=False)
@@ -71,6 +77,9 @@ def fit_horizon(dets: pd.DataFrame, width: int, height: int, fps: float, stride:
         inliers = np.abs(y - (v0 + k * x)) < 6 + 0.04 * x
         if inliers.sum() > best_inliers.sum():
             best_inliers = inliers
+    if best_inliers.sum() < 2:
+        raise ValueError("cannot calibrate the camera: the cars' wheel rows do not line up with their sizes "
+                         "(all of a similar size, or too few)")
     k, v0 = np.polyfit(x[best_inliers], y[best_inliers], 1)
     residual = float(np.median(np.abs(y[best_inliers] - (v0 + k * x[best_inliers]))))
     focal = (width / 2) / np.tan(np.radians(hfov_deg) / 2)

@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
@@ -51,6 +51,7 @@ RELATION_COLOURS_BGR = {
 SCENES = ["separated_path", "bike_lane", "shared_road"]
 
 FILENAME_TIME = re.compile(r"VID_(\d{8})_(\d{6})")
+CUT_OFFSET = re.compile(r"_from(\d+)s(?:_|$)")  # a clip cut from a ride, this many seconds in
 
 
 @dataclass(frozen=True)
@@ -71,11 +72,15 @@ class VideoInfo:
 
     @property
     def start_local(self) -> str | None:
-        """Recording start parsed from the Insta360 file name (camera local time)."""
+        """Recording start parsed from the Insta360 file name (camera local time). A clip cut from a ride and named
+        with the offset it starts at (`<ride>_from300s_3min.mp4`, as the Colab notebook names it) starts that much
+        later."""
         match = FILENAME_TIME.search(self.path.name)
         if not match:
             return None
-        return datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").isoformat()
+        start = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S")
+        cut = CUT_OFFSET.search(self.path.stem)
+        return (start + timedelta(seconds=int(cut.group(1))) if cut else start).isoformat()
 
 
 def open_video(path: Path, hw: bool | None = None) -> cv2.VideoCapture:
@@ -115,9 +120,10 @@ class VideoOut:
                 raise SystemExit(f"Could not create {path}")
             return
         cap = ["-maxrate", f"{max_mbps}M", "-bufsize", f"{2 * max_mbps}M"] if max_mbps else []
+        # 4 encoder threads: x264's default (1.5 per core) held ~700 MB at 1080p, enough to starve a small laptop
         self._ffmpeg = imageio_ffmpeg.write_frames(
             str(path), size, pix_fmt_in="bgr24", fps=fps, codec="libx264", quality=None, macro_block_size=2,
-            output_params=["-crf", str(crf), *cap, "-preset", "medium", "-movflags", "+faststart"])
+            output_params=["-crf", str(crf), *cap, "-preset", "medium", "-threads", "4", "-movflags", "+faststart"])
         self._ffmpeg.send(None)
 
     def write(self, frame) -> None:

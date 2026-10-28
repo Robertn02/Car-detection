@@ -5,8 +5,9 @@ Two settings, each scored with and without stitching on the same tracker output:
   * the corpus pipeline setting: bikesafe.perceive at its processed frame rate (a perception folder), scored on the
     processed frames only.
 
+    python scripts/track_vehicles.py data/approved_sequence.mp4 models/yolo11n.pt work/approved --no-video
     python scripts/evaluate_stitching.py data/approved_tracks.csv results/stitching \
-        benchmark_30fps=outputs/approved/botsort_vehicle_tuned_tracks.csv pipeline=work/perception_approved/approved_sequence
+        benchmark_30fps=work/approved/<the tracks CSV it wrote> pipeline=work/perception_approved/approved_sequence
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ def accumulate(reference: pd.DataFrame, prediction: pd.DataFrame, frames: list[i
 
 def without_duplicates(tracks: pd.DataFrame) -> pd.DataFrame:
     """Drop the shorter track of every duplicate pair (a second box on one vehicle at the same time)."""
-    return tracks[~tracks.track_id.isin(set(duplicates(tracks).B))]
+    return pd.DataFrame(tracks[~tracks.track_id.isin(set(duplicates(tracks).B))])
 
 
 def main() -> None:

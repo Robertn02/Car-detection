@@ -11,13 +11,17 @@ rebuilding the report adds the corpus-level results (feature ablation, vehicle c
     python scripts/build_upgrade_report.py [--out reports/UPGRADE_REPORT_2026-09.pdf]
 
 Charts are written to reports/figures/; photo figures there were rendered from the demo clips with plates blurred.
+
+This is the September 2026 milestone report: its text describes the pipeline of that round (plates blurred, the
+gradient-boosting relation model, 378 labelled tracks). Later rounds changed all three (plates are read as text, extra
+trees on 403 labels; see docs/TYPOLOGY_PIPELINE.md), so rebuilding it from today's result files would put new
+numbers under the old text: the PDF in reports/ is the record, and the date printed is the milestone's.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from datetime import date
 from pathlib import Path
 
 import matplotlib
@@ -216,7 +220,7 @@ def chart_style() -> None:
 
 def bike_lane_scores(per_second: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Accuracy / precision / recall / F1 of the per-second bike-lane decision for CLIP, lane paint and fused."""
-    d = per_second[per_second.labelled_in_bike_lane.notna()].copy()
+    d = pd.DataFrame(per_second[per_second.labelled_in_bike_lane.notna()]).copy()
     d["clip_bike"] = (d.scene_clip_v2 == "bike_lane").astype(float)
     d["paint"] = pd.to_numeric(d.paint_in_bike_lane, errors="coerce")
     d["fused"] = d.paint.fillna(d.clip_bike)
@@ -319,7 +323,7 @@ def chart_before_after(ba: pd.DataFrame, out: Path) -> None:
 
 
 def chart_plate_coverage(cov: pd.DataFrame, out: Path) -> None:
-    cov = cov[cov.relation != "all"]
+    cov = pd.DataFrame(cov[cov.relation != "all"])
     fig, ax = plt.subplots(figsize=(9.2, 2.5))
     x = np.arange(len(cov))
     ax.bar(x - 0.2, 100 * cov.plate_at_least_60px, 0.4, color=CHART["grey"], label="plate at least 60 px wide at closest")
@@ -405,7 +409,7 @@ def build(out: Path) -> None:
     story += [Spacer(1, 16 * mm), p("BIKE-ROUTE VEHICLE TYPOLOGY \u2014 UPGRADE", "kicker"), p("Upgrade Report", "title"),
               p("Bike lanes, traffic signals and signs, sharper motion cues, one identity per vehicle, "
                 "licence-plate privacy, and faster processing", "subtitle"),
-              p(f"{date.today():%B %Y}", "kicker"), Spacer(1, 4), p("WHAT CHANGED IN THE PIPELINE", "label"),
+              p("September 2026", "kicker"), Spacer(1, 4), p("WHAT CHANGED IN THE PIPELINE", "label"),
               callout("", "perception \u2192 ego-motion \u2192 depth \u2192 <b>traffic lights, signs and bike lanes</b> "
                           "\u2192 track features with <b>flow motion cues, lane-paint relations and one id per "
                           "vehicle</b> \u2192 typology model \u2192 exposure outputs and overlay clips with "
@@ -799,7 +803,7 @@ def build(out: Path) -> None:
               p("GPU timings depend on the workstation; bikesafe.run prints them per stage.", "caption")]
 
     # -------------------------------------------------------------------------------- corpus results, if present
-    if corpus_new:
+    if corpus_new and corpus is not None:
         c = corpus
         minutes = c.minutes.sum()
         rows = [["Measure (all rides)", "Value"], ["Minutes of video", f"{minutes:.1f}"]]
