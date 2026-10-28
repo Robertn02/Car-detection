@@ -28,9 +28,29 @@
   const video = $("#player"), track = $("#track"), head = $("#head");
   let current = null, map = null, mapLayers = [], dot = null, frame = 0;
 
+  // the map's tiles; where tile.openstreetmap.org cannot be reached (some networks do not resolve it, and take seconds
+  // to say so) - no tile in TILE_WAIT_MS, or more failing than loading (a few may come from the browser's cache) - the
+  // same map data from a second server
+  const TILE_WAIT_MS = 3000;
+  function baseTiles(m, tiles) {
+    const layer = L.tileLayer(tiles.url, {attribution: tiles.credit, maxZoom: 19}).addTo(m);
+    let loads = 0, errors = 0, swapped = false;
+    const swap = () => {
+      if (swapped || !tiles.fallback) return;
+      swapped = true;
+      m.attributionControl.removeAttribution(tiles.credit).addAttribution(tiles.fallback.credit);
+      layer.options.attribution = tiles.fallback.credit;
+      layer.setUrl(tiles.fallback.url);
+    };
+    layer.on("tileload", () => { loads++; });
+    layer.on("tileerror", () => { if (++errors > loads) swap(); });
+    setTimeout(() => { if (!loads) swap(); }, TILE_WAIT_MS);
+    return layer;
+  }
+
   function tiles(target) {
     const m = L.map(target, {scrollWheelZoom: false, attributionControl: true, zoomControl: false});
-    L.tileLayer(SITE.tiles.url, {attribution: SITE.tiles.credit, maxZoom: 19}).addTo(m);
+    baseTiles(m, SITE.tiles);
     return m;
   }
 
