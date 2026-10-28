@@ -66,7 +66,7 @@ PLATE_LABEL_COLUMNS = ["video", "track_id", "frame", "x1", "y1", "x2", "y2", "te
 QUEUE_SIZE = 40
 MAX_PLATE_CHARS = 8  # US plates carry at most 8 characters (California 7)
 MIN_PLATE_W, MAX_PLATE_W = 40, 300  # px; narrower plates are unreadable to a reviewer too, wider boxes are not plates
-MAX_Z_M = 15.0  # vehicles reviewed: those that came this close (where relations are validated and matter)
+MAX_Z_M = 25.0  # vehicles reviewed: those that came this close (where relations are validated and matter)
 MIN_BOX_H = 40
 SPREAD_S = 4.0  # at most one queued vehicle per ride and this many seconds, so a queue is not one traffic jam
 CLIP_WIDTH = 960  # px; vehicle clips
@@ -117,7 +117,7 @@ def vehicle_priority(tracks: pd.DataFrame) -> pd.DataFrame:
     flag((t.vehicle_relation == "oncoming") & (get("view_rear") > get("view_front") + 0.1), 0.5,
          "oncoming but its rear is seen")
     flag(get("rule_relation") != t.vehicle_relation, 0.2, "rules disagree")
-    flag(get("z_min") < 8, 0.2, "close to the rider")
+    flag(get("z_min") < 13, 0.2, "close to the rider")
     flag(get("not_vehicle") >= 0.5, 0.5, "may not be a vehicle")
     t["score"] = score
     t["reasons"] = ["; ".join(r) for r in reasons]
@@ -712,15 +712,20 @@ def make_handler(store: Store, html: str):
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annotation review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
-:root { --bg:#f6f6f4; --panel:#fff; --ink:#1d1d1b; --muted:#66665f; --line:#deded9; --accent:#2b6cb0; --on-accent:#fff;
+:root { --bg:#e6eaeb; --panel:#f4f6f6; --ink:#161a1d; --muted:#4f5a60; --line:#cdd4d6; --accent:#1f7445; --on-accent:#fff;
   --warn:#8a5a00; --ok:#2f855a; --bad:#c53030; }
 @media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39d;
-  --line:#33332f; --accent:#63a4e8; --on-accent:#0b1a2b; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
-* { box-sizing:border-box; } body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  --line:#323a3f; --accent:#35a565; --on-accent:#0b1a11; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
+* { box-sizing:border-box; } body { margin:0; font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
 header { display:flex; gap:10px 14px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
   background:var(--panel); flex-wrap:wrap; position:sticky; top:0; z-index:5; }
-header h1 { font-size:16px; margin:0 6px 0 0; white-space:nowrap; }
+header h1 { font:800 17px "Overpass", sans-serif; margin:0 6px 0 0; white-space:nowrap; }
+.plate { background:#1f6e42; color:#fff; font:700 13px "Overpass", sans-serif; padding:4px 9px 2px; border-radius:6px;
+  box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; white-space:nowrap; }
+.tab, button, .choice { font-family:"Overpass", "Atkinson Hyperlegible", sans-serif; }
 .tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .tab { padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; white-space:nowrap; }
 .tab[aria-selected=true] { border-color:var(--line); background:var(--bg); font-weight:600; }
@@ -759,7 +764,7 @@ td.num { text-align:right; width:48px; font-variant-numeric:tabular-nums; }
   .choices { margin:6px 0; } .choice { flex:1 1 auto; }
 }
 </style></head><body>
-<header><h1>Annotation review</h1>
+<header>__HOME__<h1>Annotation review</h1>
 <div class="tabs" role="tablist" aria-label="Queues">
 <button class="tab" role="tab" aria-selected="true" data-kind="vehicle">Vehicles</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="sign">Signs</button>
@@ -999,7 +1004,9 @@ load();
 def page(static: bool = False) -> str:
     keys = "abcdefghijklmnopqrstuvwxyz"
     shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
-    return PAGE.replace("__SIGNS__", json.dumps(shortcuts)).replace("__STATIC__", json.dumps(static))
+    home = '<a class="plate" href="../">Bike route vehicle typology</a>' if static else ""  # the project page, when published
+    return (PAGE.replace("__SIGNS__", json.dumps(shortcuts)).replace("__STATIC__", json.dumps(static))
+            .replace("__HOME__", home))
 
 
 MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"]}

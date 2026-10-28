@@ -52,10 +52,12 @@ def test_a_demo_lists_what_happens_in_it_once_per_vehicle(tmp_path):
         {"event": "overtaken_by_vehicle", "vehicle_id": 2, "t_start": 630.0, "clearance_m": 2.9, "side": "right"},
         {"event": "red_light_wait", "t_start": 640.0, "duration_s": 12.0},
         {"event": "crossing_traffic_near", "vehicle_id": 3, "t_start": 645.0},  # too common to list
-        {"event": "stop_sign", "t_start": 700.0}]).to_csv(ride / "events.csv", index=False)  # after the clip
+        {"event": "stop_sign", "t_start": 730.0}]).to_csv(ride / "events.csv", index=False)  # after the 2-minute clip
     moments = build_site.demo_moments("VID_X_001", 600, corpus=tmp_path)
-    assert moments == [(10.0, "close pass on the left, 1.16 m to the side"),
-                       (30.0, "overtaken on the right, 2.90 m to the side"), (40.0, "waits 12 s at a red light")]
+    assert [(m["t"], m["kind"], m["text"]) for m in moments] == [
+        (10.0, "close_pass", "Close pass on the left, 1.16 m to the side"),
+        (30.0, "overtake", "Overtaken on the right, 2.90 m to the side"), (40.0, "red_wait", "Waits 12 s at a red light")]
+    assert moments[2]["span"] == 12.0  # drawn as a stretch of the timeline
 
 
 def test_the_headline_numbers_add_up_the_rides(tmp_path):
@@ -65,7 +67,13 @@ def test_the_headline_numbers_add_up_the_rides(tmp_path):
                   "events_close_pass_under_1p5m": [1, 2], "door_zone_seconds": [60, 300],
                   "events_red_light_wait": [2, 3], "red_light_wait_seconds": [60, 120]}).to_csv(
         tmp_path / "corpus_summary.csv", index=False)
-    rows = dict(build_site.at_a_glance(corpus=tmp_path, typology=tmp_path / "none"))
-    assert rows["Filmed"] == "30 minutes on 2 rides" and rows["Overtakes"] == "7, of them 3 closer than 1.5 m"
-    assert rows["Vehicles within 15 m"].startswith("400: 70% parked") and rows["Waits at red lights"] == "5, 3 minutes in all"
-    assert rows["Beside parked cars in the door zone"] == "20% of the time" and "Relation right" not in rows
+    figures = {f["value"]: f["label"] for f in build_site.at_a_glance(corpus=tmp_path)}
+    assert figures == {"30 min": "filmed on 2 rides", "400": "vehicles within 25 m of the rider",
+                       "7": "overtakes, 3 within 1.5 m", "20%": "of riding time in the door zone"}
+
+
+def test_the_page_carries_its_demos_and_the_template_is_filled():
+    page = build_site.index_page({})
+    assert "__REPO__" not in page and "<!--DATA-->" not in page and "const SITE = " in page
+    for name, *_ in DEMOS:
+        assert f"demos/{name}.mp4" in page

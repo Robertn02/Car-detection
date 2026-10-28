@@ -33,7 +33,7 @@ parked. The model still gets some of them wrong - see "Known limitations" in `TY
 | `relation_text`, `relation`, `group` | What it was to the rider (table above) |
 | `confidence` | Share of the model's vote that went to that relation (0.2 = pure guess among 5, 1 = certain) |
 | `check` | Why a person should look at it: `model unsure` (confidence < 0.45), `may not be a vehicle` |
-| `counted` | Counts in the per-minute exposure: came within 15 m (where relations are validated), box >= 35 px, seen >= 1 s |
+| `counted` | Counts in the per-minute exposure: came within 25 m (where relations are validated), box >= 35 px, seen >= 1 s |
 | `vehicle_class` | car / motorcycle / bus / truck: the class it was detected as for the most detections (a pickup boxed as car and truck at once is the class of its longer track) |
 | `closest_m`, `lateral_at_closest_m`, `side` | Closest approach ahead, the gap to its near side at that moment, and on which side |
 | `seen_while_rider_stopped` | Share of its time in view during which the rider was stopped (at a light, a stop sign) |
@@ -46,7 +46,7 @@ parked. The model still gets some of them wrong - see "Known limitations" in `TY
 | Column | Meaning |
 |---|---|
 | `second`, `timestamp_local` | The second, and its local time |
-| `ego_speed_mps`, `ego_moving` | Rider speed (m/s, from the video; never below 0) and whether the rider moves (`ego_speed_mps` > 1 m/s). The video's speed reads about 0.6 of the GPS speed (see the limitations in `TYPOLOGY_PIPELINE.md`); `gps_1s.csv` has the GPS speed |
+| `ego_speed_mps`, `ego_moving` | Rider speed (m/s, from the video, calibrated against GPS; never below 0) and whether the rider moves (`ego_speed_mps` > 1.6 m/s); `gps_1s.csv` has the GPS speed itself |
 | `scene` | Riding context: `separated_path`, `bike_lane`, `shared_road` (CLIP probe; accuracy 0.886 on 307 labelled frames, bike lane F1 0.49), `p_*` its probabilities |
 | `bike_lane_score`, `in_bike_lane` | The lane-paint detector's evidence that the rider is in a painted bike lane (-1..1, smoothed over 7 s) and its call; empty where no paint was in view. Not the riding context: it finds most painted bike lanes but also calls most shared roads with an edge line bike lanes |
 | `lane_lines_visible` | Most painted lines found in one sample of that second |
@@ -56,18 +56,18 @@ parked. The model still gets some of them wrong - see "Known limitations" in `TY
 | `speed_limit_posted` | Last speed-limit sign read (mph), held for up to 3 minutes |
 | `n_ego_lane` ... `n_cross_side` | Vehicles of each relation visible that second (box >= 20 px), whole numbers |
 | `min_z_ego_lane_m` | Distance to the nearest vehicle in the rider's lane |
-| `min_lateral_adjacent_m`, `min_lateral_oncoming_m` | Smallest side gap to same-direction / oncoming traffic within 20 m |
-| `door_zone_parked` | Parked vehicles less than 1.5 m to the right and within 10 m ahead (dooring exposure) |
+| `min_lateral_adjacent_m`, `min_lateral_oncoming_m` | Smallest side gap to same-direction / oncoming traffic within 32 m |
+| `door_zone_parked` | Parked vehicles less than 1.5 m to the right and within 16 m ahead (dooring exposure) |
 
 ### `events.csv` - one row per event and vehicle
 
 | `event` | When |
 |---|---|
-| `overtaken_by_vehicle` | A vehicle followed for at least a second (12 detections) came within 8 m and passed beside the rider - side gap above 0 and up to 3.5 m - up to 15 m/s faster than the rider rode (from geometry, not the relation); `clearance_m` is the side gap, `side` the side, `speed_difference_mps`. A box straddling the rider's heading (gap 0) is in the rider's path, not passing |
+| `overtaken_by_vehicle` | A vehicle followed for at least a second (12 detections) came within 13 m and passed beside the rider - side gap above 0 and up to 3.5 m - up to 24 m/s faster than the rider rode (from geometry, not the relation); `clearance_m` is the side gap, `side` the side, `speed_difference_mps`. A box straddling the rider's heading (gap 0) is in the rider's path, not passing |
 | `close_pass_under_1p5m` | An overtake with less than 1.5 m clearance (metric scale not yet checked against a known distance: see the limitations) |
-| `vehicle_close_in_my_lane` | A vehicle in the rider's lane came within 6 m |
-| `crossing_traffic_near` | Side-road / crossing vehicle within 12 m |
-| `oncoming_close_pass` | Oncoming vehicle within 15 m ahead and less than 1.5 m to the side |
+| `vehicle_close_in_my_lane` | A vehicle in the rider's lane came within 10 m |
+| `crossing_traffic_near` | Side-road / crossing vehicle within 20 m |
+| `oncoming_close_pass` | Oncoming vehicle within 25 m ahead and less than 1.5 m to the side |
 | `emergency_vehicle_review` | Up to 10 large vehicles CLIP thinks may be police, ambulance or fire - to check by eye (`score`) |
 | `stop_sign` | A stop sign passed (`object_id` in `signs.csv`); stop-sign objects less than 3 s apart are one sign the object linker split, and one event |
 | `red_light_wait` | The rider stopped >= 3 s with a red signal read ahead for >= 2 s (`duration_s`, `red_seconds`) |
@@ -105,6 +105,12 @@ Written by `python -m bikesafe.gps --strava <Strava export folder>`; joins to `t
 `results/corpus/gps_sync.json` gives, per ride, the Strava activity, `offset_s` (seconds the camera clock is behind
 the GPS clock, found where the video's speed best matches the GPS speed) and `speed_correlation` (how well they match
 there; below 0.5 the clocks are used as they are and `synced` is false).
+
+`results/corpus/metric_calibration.json` (`python -m bikesafe.gps --calibrate`) gives, per ride with GPS, the factor
+distances ahead were short by (`metric_scale`, from parked cars' closing speed against the GPS speed, with how many
+parked tracks), the extra factor on the flow's forward rate (`flow_scale`), the raw ratios behind them, and under
+`now` how far the current tables are from the GPS (1 = calibrated); `default` is what a ride without GPS takes.
+Every distance and speed in the tables is in these calibrated metres.
 
 ### `identity_audit.json`
 
