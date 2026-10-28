@@ -2,7 +2,7 @@
 install. GitHub Pages serves it from the gh-pages branch, at https://robertn02.github.io/Car-detection/.
 
     python scripts/build_site.py                    # into work/site, a worktree of the gh-pages branch
-    python -m http.server -d work/site 8000         # look at it: http://127.0.0.1:8000
+    python scripts/build_site.py --serve 8000       # look at it: http://127.0.0.1:8000
     git -C work/site add -A
     git -C work/site commit -m "Update the site"
     git -C work/site push origin gh-pages
@@ -16,15 +16,21 @@ on it are downloaded and added with `bikesafe.review --import`). Needs the ride 
 
 Rides with a GPS track (bikesafe.gps, results/corpus/<video>/gps_1s.csv) get a map beside their demo, whose dot follows
 the video, and make up the exposure map (map/). After running bikesafe.gps, --pages-only writes just the pages.
+
+--serve serves the built site locally. Unlike `python -m http.server`, it answers byte-range requests, as GitHub
+Pages does: without them a browser cannot jump to a moment in a clip and plays it from the start instead.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import cv2
@@ -485,6 +491,59 @@ def write_pages(out: Path) -> None:
     print(f"pages written: {len(rides)} rides with GPS")
 
 
+class RangeHandler(SimpleHTTPRequestHandler):
+    """A static file server that answers `Range: bytes=a-b` with 206 and that part of the file, so video seeks."""
+
+    def send_head(self):  # type: ignore[override]
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+        path = Path(self.translate_path(self.path))
+        if not match or not path.is_file() or not any(match.groups()):
+            return super().send_head()
+        size = path.stat().st_size
+        first, last = match.groups()
+        start = int(first) if first else max(0, size - int(last))
+        end = min(int(last), size - 1) if first and last else size - 1
+        if start >= size or start > end:
+            self.send_error(416, "Requested range not satisfiable")
+            return None
+        f = path.open("rb")
+        f.seek(start)
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        self.range_left = end - start + 1
+        return f
+
+    def copyfile(self, source, outputfile) -> None:  # type: ignore[override]
+        left = getattr(self, "range_left", None)
+        if left is None:
+            return super().copyfile(source, outputfile)
+        while left > 0:
+            chunk = source.read(min(left, 1 << 16))
+            if not chunk:
+                break
+            try:
+                outputfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):  # the browser cancelled the request: it seeked on
+                break
+            left -= len(chunk)
+        self.range_left = None
+
+    def end_headers(self) -> None:
+        if getattr(self, "range_left", None) is None:
+            self.send_header("Accept-Ranges", "bytes")
+        super().end_headers()
+
+
+def serve(directory: Path, port: int) -> None:
+    """Serve the built site on http://127.0.0.1:<port>, answering byte ranges like GitHub Pages."""
+    server = ThreadingHTTPServer(("127.0.0.1", port), partial(RangeHandler, directory=str(directory)))
+    print(f"serving {directory} on http://127.0.0.1:{port}", flush=True)
+    server.serve_forever()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", type=Path, default=ROOT / "work" / "site")
@@ -492,7 +551,11 @@ def main() -> None:
     parser.add_argument("--render-again", action="store_true", help="Render the demos even if they are there")
     parser.add_argument("--pages-only", action="store_true",
                         help="Only write the pages and the map data (e.g. after bikesafe.gps); keep clips and review")
+    parser.add_argument("--serve", type=int, metavar="PORT", help="Serve the built site locally instead of building it")
     args = parser.parse_args()
+    if args.serve:
+        serve(args.out, args.serve)
+        return
     worktree(args.out)
     if not args.pages_only:
         render(args.out, args.render_again)

@@ -14,6 +14,27 @@ DEMOS, DURATION_S, HEAT = build_site.DEMOS, build_site.DURATION_S, build_site.HE
 demo_gps, exposure_data, polylines = build_site.demo_gps, build_site.exposure_data, build_site.polylines
 
 
+def test_the_local_server_answers_byte_ranges_so_clips_can_be_seeked(tmp_path):
+    import threading
+    import urllib.request
+    from functools import partial
+    from http.server import ThreadingHTTPServer
+
+    (tmp_path / "clip.mp4").write_bytes(bytes(range(256)) * 4)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(build_site.RangeHandler, directory=str(tmp_path)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/clip.mp4"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Range": "bytes=10-19"})) as r:
+            assert r.status == 206 and r.headers["Content-Range"] == "bytes 10-19/1024" and r.read() == bytes(range(10, 20))
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"Range": "bytes=-4"})) as r:
+            assert r.read() == bytes(range(252, 256))
+        with urllib.request.urlopen(url) as r:
+            assert r.status == 200 and r.headers["Accept-Ranges"] == "bytes" and len(r.read()) == 1024
+    finally:
+        server.shutdown()
+
+
 def test_routes_break_where_positions_are_hidden():
     t = pd.DataFrame({"lat": [1.0, 2.0, np.nan, np.nan, 3.0, 4.0, np.nan, 5.0],
                       "lon": [9.0, 9.0, np.nan, np.nan, 9.0, 9.0, np.nan, 9.0]})
