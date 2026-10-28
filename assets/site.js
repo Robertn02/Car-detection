@@ -72,7 +72,10 @@
   video.addEventListener("pause", () => cancelAnimationFrame(frame));
   video.addEventListener("seeked", follow);
 
-  function seek(t) { video.currentTime = Math.max(0, t); video.play().catch(() => {}); }
+  function seek(t) {  // before the clip's length is known, a seek is lost: wait for it
+    const go = () => { video.currentTime = Math.max(0, Math.min(t, video.duration - 0.1)); video.play().catch(() => {}); };
+    if (video.readyState >= 1) go(); else video.addEventListener("loadedmetadata", go, {once: true});
+  }
   track.addEventListener("click", e => {
     if (e.target.closest(".mark") || !current) return;
     const box = track.getBoundingClientRect();
