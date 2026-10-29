@@ -41,23 +41,24 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS  # noqa: E402
 from bikesafe.exposure import RELIABLE_Z_M  # noqa: E402
+from bikesafe.review import page as review_page  # noqa: E402
 
 REPO = "https://github.com/Robertn02/Car-detection"
 COLAB = "https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb"
 # file name, ride, start (s), title, what to look for. Windows are outside the rides' privacy zones (bikesafe.review.
 # private_seconds) and were picked from the events: each shows what its title says.
 DEMOS = [("overlay_001_greenlane_590s", "VID_20260209_090112_00_001", 590, "Green-painted bike lane",
-          "The riding context turns to bike lane on the green lane, and the lines beside the rider turn green."),
+          "The riding context reads bike lane, and the lines beside the rider turn green."),
          ("overlay_006_overtakes_200s", "VID_20260224_162848_00_006", 200, "Bike lane beside traffic: three overtakes",
-          "Cars in the lane to the left pass the rider; each overtake is measured by its side gap."),
+          "Cars in the next lane pass the rider, each with its side gap."),
          ("overlay_005_closepass_712s", "VID_20260224_091119_00_005", 712, "Two close passes and two red lights",
-          "Two stops at red lights, then two vehicles pass within 1.5 m on the left."),
+          "Two red lights, then two vehicles pass within 1.5 m."),
          ("overlay_005_following_260s", "VID_20260224_091119_00_005", 260, "Following in traffic",
-          "The car ahead in the rider's lane is red: in my lane, with its distance."),
+          "The car ahead in the rider's lane is red, with its distance."),
          ("overlay_006_parked_680s", "VID_20260224_162848_00_006", 680, "Red lights beside parked rows",
-          "Parked cars (grey) line the kerb while the rider waits at two red lights; side-road traffic is blue."),
+          "Parked cars (grey) line the kerb at two red lights; side-road traffic is blue."),
          ("overlay_002_night_340s", "VID_20260209_183334_00_002", 340, "At night: overtakes and close passes",
-          "Detection works by headlight and street light; lane paint is found where the light reaches it.")]
+          "Vehicles found by headlight and street light; lane paint where the light reaches.")]
 DURATION_S = 120
 # two minutes at the camera's size and frame rate: capped at 5.5 Mbit/s so a clip stays under GitHub's 100 MB a file
 CRF, MAX_MBPS = 23, 5.5
@@ -228,7 +229,9 @@ KINDS = {"close_pass": ("Close pass, under 1.5 m", "#c8322f"), "overtake": ("Ove
 RELATION_MEANING = {"ego_lane": "in the lane the rider rides in", "adjacent_same": "same direction, another lane",
                     "oncoming": "coming the other way", "parked": "at the kerb or in a lot",
                     "cross_side": "on a side road or crossing"}
-SITE_FILES = ROOT / "scripts" / "site"  # the page's template, stylesheet and script
+SITE_FILES = ROOT / "scripts" / "site"  # the page's template, stylesheet, script and icon
+# copied to assets/; the PNGs are favicon.svg drawn at 32 px and, on its green, at 180 px (iOS home screens)
+ASSETS = ("site.css", "site.js", "favicon.svg", "favicon-32.png", "apple-touch-icon.png")
 
 
 def demo_moments(ride: str, start: int, corpus: Path = CORPUS, duration: int = DURATION_S) -> list[dict]:
@@ -304,8 +307,9 @@ def accuracy_note(typology: Path = ROOT / "results" / "typology") -> str:
     p = pd.read_csv(predictions)
     near = p[p.z_min <= summary.get("near_z_m", RELIABLE_Z_M)]
     right = (near[f"pred_{summary['selected_model']}"] == near.label).mean()
-    return (f"The model gets {right:.0%} of {len(near)} labelled vehicles within {summary.get('near_z_m', RELIABLE_Z_M):.0f} m "
-            f"right, on rides it was not trained on; the labels come from AI-assisted review a person has yet to check. ")
+    return (f"Relation right for {right:.0%} of {len(near)} labelled vehicles within "
+            f"{summary.get('near_z_m', RELIABLE_Z_M):.0f} m, on rides the model was not trained on (labels from "
+            f"AI-assisted review, yet to be checked by a person). ")
 
 
 def page_data(gps: dict, corpus: Path = CORPUS) -> dict:
@@ -322,10 +326,8 @@ def page_data(gps: dict, corpus: Path = CORPUS) -> dict:
                 for s, (label, colour) in CONTEXT_COLOURS.items() if s in by_scene.index]
     calibration = corpus / "metric_calibration.json"
     rides = json.loads(calibration.read_text())["rides"] if calibration.exists() else {}
-    scales = [e["metric_scale"] for e in rides.values()]
     checks = [abs(e["now"]["gps_over_parked_closing"] - 1) for e in rides.values() if e.get("now")]
-    calibrated = (f"Distances and speeds are calibrated against the rides' GPS, to within {max(checks):.0%}; "
-                  f"the camera alone read them {min(scales):.1f}-{max(scales):.1f} times too short. ") if checks else ""
+    calibrated = f"Distances and speeds match GPS to within {max(checks):.0%}. " if checks else ""
     return {"relations": [{"key": r, "label": RELATION_TEXT[r], "meaning": RELATION_MEANING[r],
                            "colour": hex_colour(RELATION_COLOURS_BGR[r])} for r in RELATIONS],
             "kinds": {k: {"label": label, "colour": colour} for k, (label, colour) in KINDS.items()},
@@ -368,7 +370,8 @@ function baseTiles(m, tiles) {
   setTimeout(() => { if (!loads) swap(); }, TILE_WAIT_MS);
   return layer;
 }
-const map = L.map("map", {preferCanvas: true});
+const map = L.map("map", {preferCanvas: true, zoomControl: false});
+L.control.zoom({position: "topright"}).addTo(map);  // the panel is top left
 baseTiles(map, TILES);
 const EVENT_COLOURS = {close_pass_under_1p5m: "#ff4d4f", oncoming_close_pass: "#d36bff",
   vehicle_close_in_my_lane: "#ffd60a", overtaken_by_vehicle: "#f2f2f2"};  // apart from the riding-context colours
@@ -430,9 +433,7 @@ fetch("exposure.json").then(r => r.json()).then(data => {
         run.push([p[0], p[1]]);
       });
       flush();
-      const seconds = pts.filter(p => p[k] > 0).length;
-      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer, near that
-        spot - a wait at a red light adds up. ${seconds} of ${pts.length} seconds had any.</p>`;
+      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer.</p>`;
     }
     shown.addTo(map);
     if ($("#events").checked) {
@@ -455,7 +456,9 @@ fetch("exposure.json").then(r => r.json()).then(data => {
 def map_page() -> str:
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Exposure map</title>
+<title>Exposure map - BikeSafe</title>
+<link rel="icon" href="../assets/favicon-32.png" sizes="32x32"><link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{LEAFLET}/leaflet.css">
@@ -463,8 +466,16 @@ def map_page() -> str:
 :root {{ --panel:rgba(22,22,21,0.92); --ink:#ececea; --muted:#a3a39d; --line:#3a3a36; --accent:#63a4e8; }}
 * {{ box-sizing:border-box; }}
 html, body {{ margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; }}
-.plate {{ display:inline-block; background:#1f6e42; color:#fff; font:700 .85rem "Overpass", sans-serif; padding:4px 9px 2px;
-  border-radius:6px; box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; margin-bottom:10px; }}
+body {{ display:flex; flex-direction:column; }}
+/* the project page's bar: its name plate and sections, so the other pages are a click away */
+.bar {{ display:flex; align-items:center; gap:12px 18px; padding:8px 16px; background:#161615; border-bottom:1px solid var(--line); }}
+.plate {{ display:inline-block; background:#1f6e42; color:#fff; font:700 .9rem "Overpass", sans-serif; padding:4px 10px 2px;
+  border-radius:6px; box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; white-space:nowrap; }}
+nav {{ display:flex; gap:4px 18px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }}
+nav a {{ color:var(--ink); text-decoration:none; font:600 15px "Overpass", sans-serif; padding:4px 0 2px;
+  border-bottom:2px solid transparent; white-space:nowrap; }}
+nav a:hover {{ border-bottom-color:#f0c443; }} nav a[aria-current=page] {{ border-bottom-color:#35a565; }}
+.stage {{ position:relative; flex:1; isolation:isolate; }}
 #map {{ position:absolute; inset:0; background:#0e0e0d; }}
 #map .leaflet-tile-pane {{ filter:{DARK_TILES}; }}
 .panel {{ position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-width:calc(100% - 24px);
@@ -479,20 +490,27 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
 .swatch.dot {{ border-radius:50%; }}
 .ramp {{ height:10px; border-radius:5px; margin:6px 0 2px;
   background:linear-gradient(90deg, {", ".join(HEAT_RAMP)}); }}
-@media (max-width:600px) {{ .panel {{ top:auto; bottom:12px; max-height:45%; }} }}
+@media (max-width:600px) {{
+  .bar {{ gap:10px; padding:8px 12px; }} .plate {{ font-size:.82rem; padding:4px 9px 2px; }}
+  nav {{ gap:12px; }} nav a {{ font-size:14px; }}
+  .panel {{ top:auto; bottom:12px; max-height:45%; }}
+}}
 </style></head><body>
+<header class="bar">
+  <a class="plate" href="../">BikeSafe</a>
+  <nav aria-label="Sections"><a href="../#demos">Demos</a><a href="../#results">Results</a><a href="./" aria-current="page">Map</a><a href="../review/">Review</a><a href="{REPO}">Code</a></nav>
+</header>
+<main class="stage">
 <div id="map"></div>
 <div class="panel">
-  <a class="plate" href="../">Bike route vehicle typology</a>
   <h1>Exposure map</h1>
-  <p class="muted">Each second of the rides placed by its GPS track, with what the camera saw then. Each ride's
-  start and end are left out, within 400 to 800 m of them.</p>
+  <p class="muted">What the camera saw, placed by GPS. Each ride's start and end are hidden.</p>
   <div id="layers"></div>
   <p><select id="ride" aria-label="Ride"><option value="-1">All rides</option></select></p>
   <label><input type="checkbox" id="events" checked> Close passes and overtakes</label>
   <div id="legend"></div>
-  <p class="muted"><a href="../#demos">The demos</a></p>
 </div>
+</main>
 <script src="{LEAFLET}/leaflet.js"></script>
 <script>
 const TILES = {json.dumps({"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK})};
@@ -504,9 +522,11 @@ const HEAT_RAMP = {json.dumps(HEAT_RAMP)};{EXPOSURE_MAP_JS}
 def write_pages(out: Path) -> None:
     rides = ride_gps()
     (out / "assets").mkdir(exist_ok=True)
-    for name in ("site.css", "site.js"):
+    for name in ASSETS:
         shutil.copyfile(SITE_FILES / name, out / "assets" / name)
     (out / "index.html").write_text(index_page(demo_gps(rides)), encoding="utf-8")
+    if (out / "review").is_dir():  # its page again, so its bar keeps up with the site; its queues and media are kept
+        (out / "review" / "index.html").write_text(review_page(static=True), encoding="utf-8")
     if rides:
         (out / "map").mkdir(exist_ok=True)
         (out / "map" / "exposure.json").write_text(json.dumps(exposure_data(rides), separators=(",", ":")),
@@ -574,7 +594,7 @@ def main() -> None:
     parser.add_argument("--per-queue", type=int, default=20, help="Items per queue on the review page")
     parser.add_argument("--render-again", action="store_true", help="Render the demos even if they are there")
     parser.add_argument("--pages-only", action="store_true",
-                        help="Only write the pages and the map data (e.g. after bikesafe.gps); keep clips and review")
+                        help="Only write the pages and the map data (e.g. after bikesafe.gps); keep clips and review queues")
     parser.add_argument("--serve", type=int, metavar="PORT", help="Serve the built site locally instead of building it")
     args = parser.parse_args()
     if args.serve:

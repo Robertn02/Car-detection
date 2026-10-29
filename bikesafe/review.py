@@ -77,6 +77,7 @@ CLIP_MAX_S = 8.0  # a longer track plays faster, so every clip loops in about th
 CLIP_PAD_S = 1.0  # shown before the track starts and after it ends
 MAX_PER_SIGN_TYPE = QUEUE_SIZE // 4  # a sign queue is not twenty of one type
 NO_GPS_PRIVATE_S = 180  # a ride without GPS: this much of its start and end is kept out of the public copy
+REPO_URL = "https://github.com/Robertn02/Car-detection"  # the public copy's "Code" link
 SIGN_TYPES_UI = ["stop", "yield", "speed_limit", "do_not_enter", "one_way", "no_turn", "parking", "bike", "pedestrian",
                  "warning", "street_name", "guide", "lane_use", "bus_stop", "roadwork", "other_sign", "not_a_sign"]
 
@@ -722,7 +723,7 @@ def make_handler(store: Store, html: str):
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Annotation review</title>
+<title>Annotation review</title>__ICON__
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -736,6 +737,11 @@ header { display:flex; gap:10px 14px; align-items:center; padding:10px 16px; bor
 header h1 { font:800 17px "Overpass", sans-serif; margin:0 6px 0 0; white-space:nowrap; }
 .plate { background:#1f6e42; color:#fff; font:700 13px "Overpass", sans-serif; padding:4px 9px 2px; border-radius:6px;
   box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; white-space:nowrap; }
+.site { display:flex; align-items:center; gap:10px 18px; padding:8px 16px; background:var(--bg); border-bottom:1px solid var(--line); }
+.site nav { display:flex; gap:4px 16px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
+.site nav a { color:var(--ink); text-decoration:none; font:600 14px "Overpass", sans-serif; padding:3px 0 1px;
+  border-bottom:2px solid transparent; white-space:nowrap; }
+.site nav a:hover { border-bottom-color:#e2b21f; } .site nav a[aria-current=page] { border-bottom-color:var(--accent); }
 .tab, button, .choice { font-family:"Overpass", "Atkinson Hyperlegible", sans-serif; }
 .tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .tab { padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; white-space:nowrap; }
@@ -769,13 +775,13 @@ td.num { text-align:right; width:48px; font-variant-numeric:tabular-nums; }
 .hint { font-size:13px; color:var(--muted); }
 @media (hover:none) { .hint, .choice kbd { display:none; } }
 @media (max-width:600px) {
-  header { padding:8px 10px; } main { padding:10px; }
+  header, .site { padding:8px 10px; } .site { gap:10px; } .site nav { gap:12px; } main { padding:10px; }
   .decide { position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line); margin:0 -14px -14px;
     padding:8px 14px; border-radius:0 0 10px 10px; }
   .choices { margin:6px 0; } .choice { flex:1 1 auto; }
 }
 </style></head><body>
-<header>__HOME__<h1>Annotation review</h1>
+__SITE__<header><h1>Annotation review</h1>
 <div class="tabs" role="tablist" aria-label="Queues">
 <button class="tab" role="tab" aria-selected="true" data-kind="vehicle">Vehicles</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="sign">Signs</button>
@@ -1015,9 +1021,15 @@ load();
 def page(static: bool = False) -> str:
     keys = "abcdefghijklmnopqrstuvwxyz"
     shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
-    home = '<a class="plate" href="../">Bike route vehicle typology</a>' if static else ""  # the project page, when published
+    # published, the page sits under the project page (scripts/build_site.py): its bar and icon, a level up
+    site = (f'<div class="site"><a class="plate" href="../">BikeSafe</a><nav aria-label="Sections">'
+            f'<a href="../#demos">Demos</a><a href="../#results">Results</a><a href="../map/">Map</a>'
+            f'<a href="./" aria-current="page">Review</a><a href="{REPO_URL}">Code</a></nav></div>') if static else ""
+    icon = ('<link rel="icon" href="../assets/favicon-32.png" sizes="32x32">'
+            '<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">'
+            '<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">') if static else ""
     return (PAGE.replace("__SIGNS__", json.dumps(shortcuts)).replace("__STATIC__", json.dumps(static))
-            .replace("__HOME__", home))
+            .replace("__SITE__", site).replace("__ICON__", icon))
 
 
 MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"]}

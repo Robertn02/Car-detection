@@ -1,23 +1,25 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bike route vehicle typology</title>
+<title>BikeSafe</title>
 <meta name="description" content="Every vehicle around a cyclist, typed from a handlebar camera: in the rider's lane, sharing the road, oncoming, parked or on a side road.">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@400;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="__LEAFLET__/leaflet.css">
+<link rel="icon" href="assets/favicon-32.png" sizes="32x32"><link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 <link rel="stylesheet" href="assets/site.css">
 </head><body>
 <a class="skip" href="#demos">Skip to the demos</a>
 <header class="bar">
-  <a class="plate" href="#top" aria-label="Bike route vehicle typology, top of the page">Bike route vehicle typology</a>
+  <a class="plate" href="#top" aria-label="BikeSafe, top of the page">BikeSafe</a>
   <nav aria-label="Sections"><a href="#demos">Demos</a><a href="#results">Results</a><a href="map/">Map</a><a href="review/">Review</a><a href="__REPO__">Code</a></nav>
 </header>
 <main id="top">
 <section class="hero">
   <div class="hero-text">
     <h1>Every vehicle around a cyclist, read from the handlebars</h1>
-    <p class="lede">A camera on the bike, a pipeline that finds each car, bus and truck, works out where it is going relative
-      to the rider, and adds up what a ride exposes the rider to.</p>
+    <p class="lede">A handlebar camera finds each car, bus and truck, tells how it relates to the rider, and adds up
+      what a ride exposes them to.</p>
     <div class="actions"><a class="button" href="#demos">Watch the demos</a><a class="button quiet" href="map/">Open the exposure map</a></div>
   </div>
   <figure class="hero-clip"><video src="demos/highlight.mp4" poster="demos/highlight.jpg" autoplay muted loop playsinline aria-label="A few seconds of a ride with the overlay"></video></figure>
@@ -25,7 +27,7 @@
 
 <section class="typology" aria-labelledby="typology-title">
   <h2 id="typology-title">Five ways a vehicle relates to the rider</h2>
-  <p class="section-lede">Each box on the video takes the colour of what the vehicle is to the rider. Within 25 m, where it matters most.</p>
+  <p class="section-lede">Each box on the video is coloured by what the vehicle is to the rider.</p>
   <figure class="street">
     <svg viewBox="0 0 960 400" role="img" aria-labelledby="street-title">
       <title id="street-title">A street seen from above: the rider in the right-hand lane with a red car ahead, an orange car in the next lane going the same way, a magenta oncoming car across the yellow centre line, grey parked cars at the kerb and a blue car on a side street.</title>
@@ -63,7 +65,7 @@
 </section>
 
 <section class="demos" id="demos" aria-labelledby="demos-title">
-  <div class="section-head"><h2 id="demos-title">Demos</h2><p class="section-lede">Two minutes each, at the camera's full size and frame rate. Pick one below; the marks under the video jump to what happens.</p></div>
+  <div class="section-head"><h2 id="demos-title">Demos</h2><p class="section-lede">Two-minute clips. Pick one; the marks under the video jump to each event.</p></div>
   <div class="player">
     <div class="screen"><video id="player" controls playsinline preload="metadata"></video></div>
     <aside class="where" aria-label="Where the clip was filmed"><div id="minimap" class="minimap"></div><p id="nomap" class="nomap" hidden>No GPS was recorded on this ride.</p></aside>
@@ -83,7 +85,7 @@
 
 <section class="panels">
   <article class="panel map-panel" aria-labelledby="map-title">
-    <div><h2 id="map-title">Exposure map</h2><p>Where along the rides the rider met moving traffic, parked cars in the door zone and close passes, from the video and the GPS tracks.</p>
+    <div><h2 id="map-title">Exposure map</h2><p>Where the rides met moving traffic, door-zone parking and close passes.</p>
     <a class="button" href="map/">Open the map</a></div>
     <div id="routes" class="routes" aria-hidden="true"></div>
   </article>
