@@ -1,6 +1,8 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Exposure map</title>
+<title>Exposure map - BikeSafe</title>
+<link rel="icon" href="../assets/favicon-32.png" sizes="32x32"><link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
@@ -8,8 +10,16 @@
 :root { --panel:rgba(22,22,21,0.92); --ink:#ececea; --muted:#a3a39d; --line:#3a3a36; --accent:#63a4e8; }
 * { box-sizing:border-box; }
 html, body { margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; }
-.plate { display:inline-block; background:#1f6e42; color:#fff; font:700 .85rem "Overpass", sans-serif; padding:4px 9px 2px;
-  border-radius:6px; box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; margin-bottom:10px; }
+body { display:flex; flex-direction:column; }
+/* the project page's bar: its name plate and sections, so the other pages are a click away */
+.bar { display:flex; align-items:center; gap:12px 18px; padding:8px 16px; background:#161615; border-bottom:1px solid var(--line); }
+.plate { display:inline-block; background:#1f6e42; color:#fff; font:700 .9rem "Overpass", sans-serif; padding:4px 10px 2px;
+  border-radius:6px; box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; white-space:nowrap; }
+nav { display:flex; gap:4px 18px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
+nav a { color:var(--ink); text-decoration:none; font:600 15px "Overpass", sans-serif; padding:4px 0 2px;
+  border-bottom:2px solid transparent; white-space:nowrap; }
+nav a:hover { border-bottom-color:#f0c443; } nav a[aria-current=page] { border-bottom-color:#35a565; }
+.stage { position:relative; flex:1; isolation:isolate; }
 #map { position:absolute; inset:0; background:#0e0e0d; }
 #map .leaflet-tile-pane { filter:invert(1) grayscale(1) brightness(0.75) contrast(1.1); }
 .panel { position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-width:calc(100% - 24px);
@@ -24,20 +34,27 @@ select { font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(-
 .swatch.dot { border-radius:50%; }
 .ramp { height:10px; border-radius:5px; margin:6px 0 2px;
   background:linear-gradient(90deg, #2c1a6e, #b3206e, #f05a28, #fbb33b, #fffbe6); }
-@media (max-width:600px) { .panel { top:auto; bottom:12px; max-height:45%; } }
+@media (max-width:600px) {
+  .bar { gap:10px; padding:8px 12px; } .plate { font-size:.82rem; padding:4px 9px 2px; }
+  nav { gap:12px; } nav a { font-size:14px; }
+  .panel { top:auto; bottom:12px; max-height:45%; }
+}
 </style></head><body>
+<header class="bar">
+  <a class="plate" href="../">BikeSafe</a>
+  <nav aria-label="Sections"><a href="../#demos">Demos</a><a href="../#results">Results</a><a href="./" aria-current="page">Map</a><a href="../review/">Review</a><a href="https://github.com/Robertn02/Car-detection">Code</a></nav>
+</header>
+<main class="stage">
 <div id="map"></div>
 <div class="panel">
-  <a class="plate" href="../">Bike route vehicle typology</a>
   <h1>Exposure map</h1>
-  <p class="muted">Each second of the rides placed by its GPS track, with what the camera saw then. Each ride's
-  start and end are left out, within 400 to 800 m of them.</p>
+  <p class="muted">What the camera saw, placed by GPS. Each ride's start and end are hidden.</p>
   <div id="layers"></div>
   <p><select id="ride" aria-label="Ride"><option value="-1">All rides</option></select></p>
   <label><input type="checkbox" id="events" checked> Close passes and overtakes</label>
   <div id="legend"></div>
-  <p class="muted"><a href="../#demos">The demos</a></p>
 </div>
+</main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 const TILES = {"url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "credit": "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors", "fallback": {"url": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", "credit": "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors, tiles <a href=\"https://www.hotosm.org/\">HOT</a> hosted by <a href=\"https://openstreetmap.fr/\">OSM France</a>"}};
@@ -62,7 +79,8 @@ function baseTiles(m, tiles) {
   setTimeout(() => { if (!loads) swap(); }, TILE_WAIT_MS);
   return layer;
 }
-const map = L.map("map", {preferCanvas: true});
+const map = L.map("map", {preferCanvas: true, zoomControl: false});
+L.control.zoom({position: "topright"}).addTo(map);  // the panel is top left
 baseTiles(map, TILES);
 const EVENT_COLOURS = {close_pass_under_1p5m: "#ff4d4f", oncoming_close_pass: "#d36bff",
   vehicle_close_in_my_lane: "#ffd60a", overtaken_by_vehicle: "#f2f2f2"};  // apart from the riding-context colours
@@ -124,9 +142,7 @@ fetch("exposure.json").then(r => r.json()).then(data => {
         run.push([p[0], p[1]]);
       });
       flush();
-      const seconds = pts.filter(p => p[k] > 0).length;
-      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer, near that
-        spot - a wait at a red light adds up. ${seconds} of ${pts.length} seconds had any.</p>`;
+      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer.</p>`;
     }
     shown.addTo(map);
     if ($("#events").checked) {
