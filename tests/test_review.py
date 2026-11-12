@@ -139,6 +139,12 @@ def test_a_track_clip_plays_every_frame_with_the_box_in_between(tmp_path):
     cap.release()
     magenta = (image[..., 0] > 180) & (image[..., 1] < 90) & (image[..., 2] > 180)
     assert ok and magenta.sum() > 500
+    # the lead-up to a pass: from before the track (here back to the start of the video) to a quarter of a second
+    # into it, and the second after
+    track_clip(video, dets, 5, out, lead_s=0.5, tail_s=0.25)
+    cap = cv2.VideoCapture(str(out))
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == (24 + 6 + 24) + 1  # frames 0 to 54
+    cap.release()
 
 
 def test_an_exported_page_runs_without_a_server_and_its_decisions_import(store, tmp_path, monkeypatch):
@@ -160,6 +166,38 @@ def test_an_exported_page_runs_without_a_server_and_its_decisions_import(store, 
     assert pd.read_csv(labels_dir / "review_log.csv").time.iloc[0] == "2026-10-23T10:00:00"  # when it was decided
     decisions.write_text(json.dumps([{"kind": "vehicle", "video": video, "item": 6, "label": "car",
                                       "reviewer": "prof", "time": "2026-10-23T10:01:00"}]))
+    with pytest.raises(SystemExit):
+        import_decisions(s, decisions)
+
+
+def test_a_pass_stays_queued_until_someone_says_what_led_to_it(store, tmp_path):
+    from bikesafe.review import export, import_decisions
+
+    s, video, labels_dir = store
+    pd.DataFrame([
+        {"event": "overtaken_by_vehicle", "track_id": 6, "vehicle_id": 6, "t_start": 30.0, "clearance_m": 2.4, "side": "left"},
+        {"event": "overtaken_by_vehicle", "track_id": 5, "vehicle_id": 5, "t_start": 12.0, "clearance_m": 1.1, "side": "left"},
+        {"event": "stop_sign", "t_start": 40.0}]).to_csv(tmp_path / "corpus" / video / "events.csv", index=False)
+    assert [(i["item"], i["clearance"]) for i in s.event_queue()] == [(5, 1.1), (6, 2.4)]  # the closest pass first
+    s.save({"kind": "event", "video": video, "item": 5, "label": "pulling_out", "text": "A car pulled out.",
+            "model": "overtake", "reviewer": "prof"})
+    said = pd.read_csv(labels_dir / "event_context.csv").iloc[0]
+    assert (said.cause, said.note, said.t_start, said.reviewer) == ("pulling_out", "A car pulled out.", 12.0, "prof")
+    assert [i["item"] for i in s.event_queue()] == [6]
+    assert "event" not in agreement(pd.read_csv(labels_dir / "review_log.csv"))  # the model gave no answer to keep
+    assert s.undo("prof")["ok"] and pd.read_csv(labels_dir / "event_context.csv").empty
+    assert [i["item"] for i in s.event_queue()] == [5, 6]
+    # the exported copy carries the queue with each pass's lead-up clip, and its answers import
+    s.image = lambda kind, video, item, row=None: b"media"  # type: ignore[method-assign]
+    export(s, tmp_path / "site", per_queue=5)
+    assert [i["item"] for i in json.loads((tmp_path / "site" / "queue_event.json").read_text())] == [5, 6]
+    assert (tmp_path / "site" / "media" / video / "pass_5.mp4").exists()
+    decisions = tmp_path / "decisions.json"
+    decisions.write_text(json.dumps([{"kind": "event", "video": video, "item": 6, "label": "debris", "text": "",
+                                      "model": "overtake", "reviewer": "prof", "time": "2026-11-12T10:00:00"}]))
+    assert import_decisions(s, decisions) == (1, 0)
+    assert pd.read_csv(labels_dir / "event_context.csv").cause.tolist() == ["debris"]
+    decisions.write_text(json.dumps([{"kind": "event", "video": video, "item": 6, "label": "aliens", "reviewer": "prof"}]))
     with pytest.raises(SystemExit):
         import_decisions(s, decisions)
 
