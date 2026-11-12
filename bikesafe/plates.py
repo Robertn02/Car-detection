@@ -25,7 +25,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import ROOT, VIDEOS, open_video, read_json, resolve_video
+from bikesafe.common import ROOT, VIDEOS, label_chip, open_video, paste_chip, read_json, resolve_video
 
 PLATE_MODEL = "yolo-v9-t-384-license-plate-end2end"
 OCR_MODEL = "cct-s-v2-global-model"
@@ -323,14 +323,11 @@ class PlateAnnotator:
 
     def _draw(self, image: np.ndarray, plate: np.ndarray, text: str, scale: float) -> None:
         thick = max(2, int(round(2 / scale)))
-        font = 0.6 / scale
         x1, y1, x2, y2 = plate.astype(int)
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), thick)
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 255), max(1, thick - 1))
         self.plates_drawn += 1
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
-        top = min(image.shape[0] - 2, y2 + th + 8)
-        cv2.rectangle(image, (x1, top - th - 6), (x1 + tw + 6, top + 2), (0, 0, 0), -1)
-        cv2.putText(image, text, (x1 + 3, top - 2), cv2.FONT_HERSHEY_SIMPLEX, font, (0, 255, 255), thick, cv2.LINE_AA)
+        chip = label_chip(text, max(12, int(round(16 / scale))), ink=(0, 255, 255))
+        paste_chip(image, chip, x1, min(image.shape[0] - chip[1].shape[0], y2 + 3))
 
 
 def main() -> None:

@@ -16,10 +16,11 @@ a moment after. Lines with no paint under them in the frame (a crack or seam the
 lines are drawn as strips of road paint in perspective, no further ahead than their paint was seen, and behind the
 vehicles.
 
-Labels are short ("same way", "side road": the legend gives the colours in full) and placed so they do not cover
-one another. The banner's riding context is the most common one over SCENE_SMOOTH_S around the moment, so it does
+Labels are short ("same way 9 m", "side road"), set in a scalable sans on dark chips with a stripe of the box's colour
+(bikesafe.common.label_chip), and placed so they do not cover one another; --legend adds the colours' key. The banner's riding context is the most common one over SCENE_SMOOTH_S around the moment, so it does
 not flip with every second's call (timeline_1s.csv keeps the per-second call). Its speed is the GPS speed where the
-ride has a GPS track (bikesafe.gps), else the video's (calibrated against the GPS of the other rides).
+ride has a GPS track (bikesafe.gps), else the video's (calibrated against the GPS of the other rides) as its median
+over 7 s.
 
 The clip has every frame of the video at its full size (--width to shrink it). Vehicles are detected on every second
 frame (bikesafe.perceive --target-fps), so their boxes are interpolated on the frames in between. It is written as
@@ -39,7 +40,8 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS, ROOT, VIDEOS, VideoOut, open_video, read_json
+from bikesafe.common import (RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS, ROOT, VIDEOS, VideoOut, label_chip,
+                             open_video, paste_chip, read_json)
 from bikesafe.infrastructure import JUNCTION_CROSSWALK, JUNCTION_LINES, LINE_Z_MAX, REF_Z, line_extents, parse_lines
 
 LABELS = RELATION_TEXT  # the legend
@@ -57,6 +59,8 @@ SIGN_NAMES = {"parking": "parking", "no_turn": "no turn", "one_way": "one way", 
               "roadwork": "road work", "bus_stop": "bus stop"}
 LANE_COLOURS_BGR = {"bike": (80, 230, 80), "solid": (255, 255, 255), "broken": (180, 180, 180), "yellow": (0, 220, 255)}
 LABEL_MAX_Z = 40.0  # m; farther vehicles get a thin box and no label (relations are validated within 25 m)
+LABEL_PX, BANNER_PX = 21, 24  # text height of the box labels and of the banner (time, context, speed)
+BANNER_H = 58  # labels keep below the banner
 UNSURE_CONFIDENCE = 0.45  # a relation the model gives less than this probability is labelled with a "?"
 MAX_BOX_GAP = 2  # processed frames (1/6 s at 12 fps) a track's box is carried across when the detector misses it
 SAMPLE_HOLD_S = 0.3  # draw an object or line on frames up to this far from the last sample that saw it
@@ -681,16 +685,13 @@ def draw_objects(image: np.ndarray, objects: list[tuple[pd.Series, np.ndarray]],
         else:
             continue
         p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))
-        cv2.rectangle(image, p1, p2, colour, 3 if label else 1)
+        cv2.rectangle(image, p1, p2, colour, 2 if label else 1, cv2.LINE_AA)
         if not label or y2 - y1 < 14:
             continue
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2)
-        spot = place_label(taken, p1[0] - 2, p1[1] - 2, p2[1], tw + 6, th + 10, image.shape[1], 60)
-        if spot is None:
-            continue
-        lx, ly = spot
-        cv2.rectangle(image, (lx, ly), (lx + tw + 6, ly + th + 10), (20, 20, 20), -1)
-        cv2.putText(image, label, (lx + 3, ly + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.75, colour, 2, cv2.LINE_AA)
+        chip = label_chip(label, LABEL_PX, colour)
+        spot = place_label(taken, p1[0] - 1, p1[1] - 3, p2[1], chip[1].shape[1], chip[1].shape[0], image.shape[1], BANNER_H)
+        if spot is not None:
+            paste_chip(image, chip, *spot)
 
 
 def smoothed_scene(scene: pd.Series, window_s: int = SCENE_SMOOTH_S) -> pd.Series:
@@ -762,6 +763,7 @@ def main() -> None:
     parser.add_argument("--no-infrastructure", action="store_true", help="Do not draw lane lines, signals and signs")
     parser.add_argument("--no-vehicles", action="store_true", help="Draw only the road infrastructure and the banner")
     parser.add_argument("--no-plates", action="store_true", help="Do not box and read licence plates")
+    parser.add_argument("--legend", action="store_true", help="Add the key to the box and line colours (bottom left)")
     args = parser.parse_args()
 
     analysis_dir = args.analysis / args.video
@@ -775,6 +777,8 @@ def main() -> None:
     gps_path = args.corpus / args.video / "gps_1s.csv"
     gps_speed = (pd.read_csv(gps_path).set_index("second").gps_speed_mps.rolling(3, center=True, min_periods=1).median()
                  if gps_path.exists() else pd.Series(dtype=float))
+    # the video's own speed drops out for a second or two beside a large vehicle: the banner shows its median over 7 s
+    video_speed = line.ego_speed_mps.clip(lower=0).rolling(7, center=True, min_periods=1).median()
     if "vehicle_relation" in tracks:  # one colour per physical vehicle
         tracks = tracks.assign(relation=tracks.vehicle_relation)
         proba = [c for c in tracks if c.startswith("proba_")]
@@ -855,35 +859,30 @@ def main() -> None:
         for r in rows.sort_values("z_m").itertuples():  # nearest first: their labels get the place above the box
             colour = RELATION_COLOURS_BGR.get(r.relation, (255, 255, 255))
             far = not r.z_m <= LABEL_MAX_Z
-            thick = 1 if far else 4 if r.relation in ("ego_lane", "adjacent_same", "oncoming") else 2
-            cv2.rectangle(image, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)), colour, thick)
+            thick = 1 if far else 3 if r.relation in ("ego_lane", "adjacent_same", "oncoming") else 2
+            cv2.rectangle(image, (int(r.x1), int(r.y1)), (int(r.x2), int(r.y2)), colour, thick, cv2.LINE_AA)
             if r.box_h >= 40 and not far:
                 unsure = "?" if r.relation_confidence < UNSURE_CONFIDENCE else ""
-                label = f"{BOX_LABELS[r.relation]}{unsure} {r.z_m:.0f}m"
-                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                spot = place_label(taken, int(r.x1), int(r.y1), int(r.y2), tw + 8, th + 10, image.shape[1], 56, steps=1)
-                if spot is None:
-                    continue  # nearer vehicles took the room around it
-                lx, ly = spot
-                cv2.rectangle(image, (lx, ly), (lx + tw + 8, ly + th + 10), colour, -1)
-                cv2.putText(image, label, (lx + 4, ly + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (15, 15, 15), 2, cv2.LINE_AA)
+                chip = label_chip(f"{BOX_LABELS[r.relation]}{unsure} {r.z_m:.0f} m", LABEL_PX, colour)
+                spot = place_label(taken, int(r.x1) - 1, int(r.y1) - 3, int(r.y2), chip[1].shape[1], chip[1].shape[0],
+                                   image.shape[1], BANNER_H, steps=1)
+                if spot is not None:  # else nearer vehicles took the room around it
+                    paste_chip(image, chip, *spot)
         clock = target / fps
-        banner = f"{int(clock // 60)}:{clock % 60:04.1f}"
+        banner = [f"{int(clock // 60)}:{clock % 60:04.1f}"]
         if info is not None:
             gps = float(gps_speed.get(second, np.nan))
-            speed = gps if np.isfinite(gps) else max(0.0, float(info.ego_speed_mps))
-            banner += (f" | {str(scene).replace('_', ' ')} | {speed:.1f} m/s ({speed * 2.237:.0f} mph"
-                       f"{' GPS' if np.isfinite(gps) else ''})")
+            speed = gps if np.isfinite(gps) else float(video_speed.get(second, 0.0))
+            banner += [str(scene).replace("_", " "), f"{speed * 2.237:.0f} mph{' (GPS)' if np.isfinite(gps) else ''}"]
             if "in_bike_lane" in line:
                 state = info.get("traffic_light_state")
                 if isinstance(state, str):
-                    banner += f" | signal {state}"
+                    banner.append(f"signal {state}")
                 limit = info.get("speed_limit_posted")
                 if limit is not None and pd.notna(limit):
-                    banner += f" | limit {int(limit)} mph"
-        cv2.rectangle(image, (0, 0), (calib["width"], 54), (20, 20, 20), -1)
-        cv2.putText(image, banner, (16, 38), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (245, 245, 245), 2, cv2.LINE_AA)
-        if not args.no_vehicles:
+                    banner.append(f"limit {int(limit)} mph")
+        paste_chip(image, label_chip("    ".join(banner), BANNER_PX), 14, 12)
+        if args.legend and not args.no_vehicles:
             draw_legend(image, lanes=lane_overlay is not None)
         writer.write(image if size == (image.shape[1], image.shape[0]) else
                      cv2.resize(image, size, interpolation=cv2.INTER_AREA))
