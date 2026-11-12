@@ -2,24 +2,24 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annotation review</title><link rel="icon" href="../assets/favicon-32.png" sizes="32x32"><link rel="icon" href="../assets/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
 <style>
-:root { --bg:#e6eaeb; --panel:#f4f6f6; --ink:#161a1d; --muted:#4f5a60; --line:#cdd4d6; --accent:#1f7445; --on-accent:#fff;
+:root { --bg:#ffffff; --panel:#f3f5f6; --ink:#16191b; --muted:#5d666b; --line:#dfe3e5; --accent:#14613e; --on-accent:#fff;
   --warn:#8a5a00; --ok:#2f855a; --bad:#c53030; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39d;
-  --line:#323a3f; --accent:#35a565; --on-accent:#0b1a11; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
-* { box-sizing:border-box; } body { margin:0; font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+@media (prefers-color-scheme: dark) { :root { --bg:#111315; --panel:#191c1f; --ink:#e7eaec; --muted:#98a2a8;
+  --line:#272c30; --accent:#6cc698; --on-accent:#0b1a11; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
+* { box-sizing:border-box; } body { margin:0; font:15px/1.45 "Archivo", "Helvetica Neue", Arial, sans-serif; background:var(--bg); color:var(--ink); }
 header { display:flex; gap:10px 14px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
   background:var(--panel); flex-wrap:wrap; position:sticky; top:0; z-index:5; }
-header h1 { font:800 17px "Overpass", sans-serif; margin:0 6px 0 0; white-space:nowrap; }
-.plate { background:#1f6e42; color:#fff; font:700 13px "Overpass", sans-serif; padding:4px 9px 2px; border-radius:6px;
-  box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; white-space:nowrap; }
-.site { display:flex; align-items:center; gap:10px 18px; padding:8px 16px; background:var(--bg); border-bottom:1px solid var(--line); }
-.site nav { display:flex; gap:4px 16px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
-.site nav a { color:var(--ink); text-decoration:none; font:600 14px "Overpass", sans-serif; padding:3px 0 1px;
-  border-bottom:2px solid transparent; white-space:nowrap; }
-.site nav a:hover { border-bottom-color:#e2b21f; } .site nav a[aria-current=page] { border-bottom-color:var(--accent); }
-.tab, button, .choice { font-family:"Overpass", "Atkinson Hyperlegible", sans-serif; }
+header h1 { font:650 17px "Archivo", sans-serif; font-stretch:92%; margin:0 6px 0 0; white-space:nowrap; }
+/* the project page's bar, as on every page of the site: its name and icon, and its sections */
+.site { display:flex; align-items:center; gap:10px 22px; padding:10px 16px; background:var(--bg); border-bottom:1px solid var(--line);
+  font:500 14px "Archivo", sans-serif; }
+.site .name { display:flex; align-items:center; gap:8px; color:var(--ink); font-weight:650; text-decoration:none; white-space:nowrap; }
+.site .name img { width:20px; height:20px; display:block; }
+.site nav { display:flex; gap:4px 20px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
+.site nav a { color:var(--muted); text-decoration:none; white-space:nowrap; }
+.site nav a:hover { color:var(--ink); text-decoration:underline; } .site nav a[aria-current=page] { color:var(--ink); }
 .tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .tab { padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; white-space:nowrap; }
 .tab[aria-selected=true] { border-color:var(--line); background:var(--bg); font-weight:600; }
@@ -58,9 +58,10 @@ td.num { text-align:right; width:48px; font-variant-numeric:tabular-nums; }
   .choices { margin:6px 0; } .choice { flex:1 1 auto; }
 }
 </style></head><body>
-<div class="site"><a class="plate" href="../">BikeSafe</a><nav aria-label="Sections"><a href="../#demos">Demos</a><a href="../#results">Results</a><a href="../map/">Map</a><a href="./" aria-current="page">Review</a><a href="https://github.com/Robertn02/Car-detection">Code</a></nav></div><header><h1>Annotation review</h1>
+<div class="site"><a class="name" href="../"><img src="../assets/favicon.svg" alt="">BikeSafe</a><nav aria-label="Sections"><a href="../#demos">Clips</a><a href="../#findings">Findings</a><a href="../#context">Limits</a><a href="../map/">Map</a><a href="./" aria-current="page">Review</a><a href="https://github.com/Robertn02/Car-detection">Code</a></nav></div><header><h1>Annotation review</h1>
 <div class="tabs" role="tablist" aria-label="Queues">
 <button class="tab" role="tab" aria-selected="true" data-kind="vehicle">Vehicles</button>
+<button class="tab" role="tab" aria-selected="false" data-kind="event">Passes</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="sign">Signs</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="plate">Plates</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="progress">Progress</button></div>
@@ -78,6 +79,8 @@ const RELS = [["ego_lane","in my lane","In the lane the rider is travelling in: 
 const NAME = Object.fromEntries(RELS.map(([k, n]) => [k, n]));
 Object.assign(NAME, {unclear: "unclear", not_vehicle: "not a vehicle", skip: "skipped"});
 const SIGNS = [["stop", "a"], ["yield", "b"], ["speed_limit", "c"], ["do_not_enter", "d"], ["one_way", "e"], ["no_turn", "f"], ["parking", "g"], ["bike", "h"], ["pedestrian", "i"], ["warning", "j"], ["street_name", "k"], ["guide", "l"], ["lane_use", "m"], ["bus_stop", "n"], ["roadwork", "o"], ["other_sign", "p"], ["not_a_sign", "q"]];
+const CAUSES = [["none", "nothing unusual", "The vehicle simply passed; nothing had pushed the rider towards it."], ["pulling_out", "a vehicle pulling out or in", "A car leaving or entering a parking space or a driveway across the rider's lane."], ["blocked", "a vehicle stopped in my lane", "Double-parked, loading or waiting in the bike lane."], ["debris", "debris or an object", "Debris, a bin, a scooter or a pothole in the rider's lane."], ["door", "a door or a person", "An open car door, or someone stepping into the lane."], ["narrowing", "the lane narrows or ends", "The bike lane ends, road works, or the street narrows."]];  // what led to a pass: [key, words, what it covers]
+Object.assign(NAME, Object.fromEntries(CAUSES.map(([k, n]) => [k, n])));
 // STATIC: the exported copy (python -m bikesafe.review --export), read from files with no server behind it; decisions
 // are kept in this browser until downloaded
 const STATIC = true;
@@ -112,7 +115,7 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t ? "true" : "false"));
   kind = t.dataset.kind; history = []; load(); });
 $("#mode").onchange = () => { $("#mode").blur(); history = []; load(); };
-const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" ? "mp4" : "jpg"}`
+const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" || k === "pass" ? "mp4" : "jpg"}`
   : `/api/img?kind=${k}&video=${encodeURIComponent(it.video)}&item=${it.item}${extra}`;
 async function load() {
   $("#modebox").style.display = kind === "vehicle" ? "" : "none";
@@ -133,7 +136,7 @@ async function load() {
     queue = queue.filter(it => !saved.some(s => s.label !== "skip" && s.kind === it.kind && s.video === it.video && s.item === it.item));
   show();
 }
-function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else { new Image().src = img("plate", it); } } }
+function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else if (kind === "event") { fetch(img("pass", it)); } else { new Image().src = img("plate", it); } } }
 const notices = () => (!stored ? `<div class="notice bad">This browser is not keeping your decisions (a private window, or storage is blocked): download them before you close the page.</div>` : "");
 const undoButton = () => history.length ? `<button id="undo">Undo <span class="hint">(Z)</span></button>` : "";
 function show() {
@@ -149,7 +152,7 @@ function show() {
     return;
   }
   const it = queue[pos]; $("#status").textContent = `${pos + 1} / ${queue.length}`;
-  if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else showPlate(it);
+  if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else if (kind === "event") showEvent(it); else showPlate(it);
   document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
   if ($("#undo")) $("#undo").onclick = undo;
   prefetch();
@@ -173,6 +176,18 @@ function showVehicle(it) {
   <div class="actions"><button class="primary" id="accept">${verify ? "Keep" : "Accept"} ${esc(name(preset))} <span class="hint">(Enter)</span></button>${undoButton()}</div></div>
   <p class="hint">Hover a choice for what it means &middot; keys 1-5, U, N, S &middot; Z undoes</p></div></div>`;
   $("#accept").onclick = () => decide(preset);
+}
+function showEvent(it) {
+  const choices = [...CAUSES.map(([k, n, tip], i) => [k, n, i + 1, tip]), ["unclear", "can't tell", "U", "The clip does not show enough."], ["skip", "skip", "S", "Decide later."]];
+  $("#main").innerHTML = `${notices()}<div class="grid"><div class="card"><video id="anim" src="${img("pass", it)}" autoplay muted loop playsinline controls></video>
+    <p class="muted small"><b>Magenta box: the vehicle that passes</b>, ${it.clearance} m to the ${esc(it.side)} &middot; ${ride(it.video)} at ${clock(it.t)} &middot; the clip starts ${it.lead} s before it appears</p>
+    <p class="muted small">${esc(it.video)}</p></div>
+  <div class="card"><p><b>What led to this pass?</b></p>
+  <p class="muted">The tables record the pass and its gap. They do not record whether something pushed the rider towards the traffic first.</p>
+  <label>Note <input id="text" size="34" placeholder="optional: what happened, in your words"></label>
+  <div class="decide"><div class="choices">${choiceButtons(choices, "")}</div>
+  <div class="actions">${undoButton()}</div></div>
+  <p class="hint">Hover a choice for what it covers &middot; keys 1-${CAUSES.length}, U, S &middot; T writes a note first &middot; Z undoes</p></div></div>`;
 }
 function showSign(it) {
   const text = readable(it.text) ? it.text : "";
@@ -209,6 +224,7 @@ async function decide(v) {
   let label = v, out = {kind: it.kind, video: it.video, item: it.item, row: it.row, model: it.model, model_conf: it.model_conf ?? Math.max(...Object.values(it.proba || {0:0})), reviewer: $("#reviewer").value.trim()};
   if (it.kind === "plate") { label = v === "skip" ? "skip" : "plate"; out.text = v === "unreadable" ? "" : text.toUpperCase(); out.model_text = it.model; out.model = "plate"; }
   else if (it.kind === "sign") { out.text = text; out.model_text = it.text; }
+  else if (it.kind === "event") out.text = text;
   out.label = label; out.time = new Date().toISOString();
   busy = true;
   try {
@@ -229,20 +245,24 @@ document.addEventListener("keydown", e => {
   if (t && (t.tagName === "SELECT" || (t.tagName === "INPUT" && !typing) || t.tagName === "TEXTAREA")) return;
   const k = e.key.toLowerCase();
   if (typing) {
-    if (e.key === "Enter") { e.preventDefault(); decide(kind === "plate" ? "read" : queue[pos] && queue[pos].model); }
+    if (e.key === "Enter") { e.preventDefault(); if (kind === "event") t.blur(); else decide(kind === "plate" ? "read" : queue[pos] && queue[pos].model); }
     else if (e.key === "Escape") t.blur();
     return;
   }
   const it = queue[pos];
   let act = null;  // the key's action; the key itself goes nowhere else (not into a field focused meanwhile)
   if (k === "z") act = undo;
-  else if (it && e.key === "Enter") act = () => decide(kind === "plate" ? "read" : (it.current || it.model));
+  else if (it && e.key === "Enter" && kind !== "event") act = () => decide(kind === "plate" ? "read" : (it.current || it.model));
   else if (it && kind !== "vehicle" && k === "t") act = () => $("#text").focus();
   else if (it && k === "s") act = () => decide("skip");
   else if (it && kind === "plate") { if (k === "x") act = () => decide("unreadable"); }
   else if (it && kind === "vehicle") {
     if (k.length === 1 && "12345".includes(k)) act = () => decide(RELS[+k - 1][0]);
     else if (k === "u") act = () => decide("unclear"); else if (k === "n") act = () => decide("not_vehicle");
+  }
+  else if (it && kind === "event") {
+    if (k.length === 1 && k >= "1" && +k <= CAUSES.length) act = () => decide(CAUSES[+k - 1][0]);
+    else if (k === "u") act = () => decide("unclear");
   }
   else if (it) { const hit = SIGNS.find(([, key]) => key === k); if (hit) act = () => decide(hit[0]); }
   if (act) { e.preventDefault(); act(); }
@@ -264,7 +284,7 @@ async function undo() {
   finally { busy = false; }
 }
 function staticProgress() {
-  const kinds = ["vehicle", "sign", "plate"].map(k => `${saved.filter(d => d.kind === k && d.label !== "skip").length} ${k}s`).join(", ");
+  const kinds = ["vehicle", "event", "sign", "plate"].map(k => `${saved.filter(d => d.kind === k && d.label !== "skip").length} ${k}s`).join(", ");
   const recent = saved.slice(-8).reverse().map(d => `<tr><td>${esc(d.kind)}</td><td>${ride(d.video)}</td><td>${esc(d.kind === "plate" ? (d.text || "unreadable") : name(d.label))}</td><td class="muted">${esc((d.time || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("");
   $("#main").innerHTML = `${notices()}<div class="card"><p>A copy of the review page that needs no server: the queues are as they were when it was made, and
     your decisions stay in this browser - <b>${decided()}</b> so far (${kinds}).</p>
@@ -282,7 +302,7 @@ async function progress() {
   const label = (k, v) => k === "plate" ? (v || "-") : name(v);
   const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${esc(k)}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
     ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${esc(label(k, c.model))}</td><td>${esc(label(k, c.human))}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
-  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${esc(k)} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
+  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${esc(k)} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels} &middot; passes with a cause ${p.event_context}</p>
     ${p.retrainable ? `<p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${esc(p.retrain.state)}: ${esc(p.retrain.log)}</span></p>`
       : `<p>Decisions are saved in <code>${esc(p.labels_dir)}</code>. The models learn from them on the machine with the labelled rides:
       there, <code>python -m bikesafe.review --import &lt;this run's folder&gt;</code> adds this run and its decisions, then Retrain.</p>`}</div>${blocks}`;
