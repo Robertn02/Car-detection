@@ -64,37 +64,46 @@ def test_the_exposure_map_has_only_placed_seconds_with_their_counts(tmp_path, mo
     assert data["routes"][0]["label"].startswith("Ride 6")
 
 
-def test_a_demo_lists_what_happens_in_it_once_per_vehicle(tmp_path):
+def test_a_demo_lists_what_happens_in_it_once_per_vehicle_with_what_led_to_a_pass(tmp_path):
     ride = tmp_path / "VID_X_001"
     ride.mkdir()
     pd.DataFrame([
-        {"event": "overtaken_by_vehicle", "vehicle_id": 1, "t_start": 610.0, "clearance_m": 1.16, "side": "left"},
-        {"event": "close_pass_under_1p5m", "vehicle_id": 1, "t_start": 610.0, "clearance_m": 1.16, "side": "left"},
-        {"event": "overtaken_by_vehicle", "vehicle_id": 2, "t_start": 630.0, "clearance_m": 2.9, "side": "right"},
+        {"event": "overtaken_by_vehicle", "vehicle_id": 1, "track_id": 11, "t_start": 610.0, "clearance_m": 1.16, "side": "left"},
+        {"event": "close_pass_under_1p5m", "vehicle_id": 1, "track_id": 11, "t_start": 610.0, "clearance_m": 1.16, "side": "left"},
+        {"event": "overtaken_by_vehicle", "vehicle_id": 2, "track_id": 12, "t_start": 630.0, "clearance_m": 2.9, "side": "right"},
         {"event": "red_light_wait", "t_start": 640.0, "duration_s": 12.0},
         {"event": "crossing_traffic_near", "vehicle_id": 3, "t_start": 645.0},  # too common to list
         {"event": "stop_sign", "t_start": 730.0}]).to_csv(ride / "events.csv", index=False)  # after the 2-minute clip
-    moments = build_site.demo_moments("VID_X_001", 600, corpus=tmp_path)
+    pd.DataFrame({"second": range(600, 720), "door_zone_parked": [2 if s == 611 else 0 for s in range(600, 720)]}).to_csv(
+        ride / "timeline_1s.csv", index=False)
+    context = tmp_path / "event_context.csv"
+    pd.DataFrame([{"video": "VID_X_001", "track_id": 11, "cause": "pulling_out", "note": "A car pulled out."},
+                  {"video": "VID_X_001", "track_id": 12, "cause": "none", "note": ""},  # nothing led to it: not said
+                  {"video": "VID_Y_002", "track_id": 11, "cause": "debris", "note": "another ride"}]).to_csv(context, index=False)
+    moments = build_site.demo_moments("VID_X_001", 600, corpus=tmp_path, context=context)
     assert [(m["t"], m["kind"], m["text"]) for m in moments] == [
-        (10.0, "close_pass", "Close pass on the left, 1.16 m to the side"),
-        (30.0, "overtake", "Overtaken on the right, 2.90 m to the side"), (40.0, "red_wait", "Waits 12 s at a red light")]
+        (10.0, "close_pass", "Close pass, 1.2 m on the left, beside parked cars"),
+        (30.0, "overtake", "Overtaken, 2.9 m on the right"), (40.0, "red_wait", "Red light, 12 s")]
+    assert moments[0]["why"] == "A car pulled out." and "why" not in moments[1]
     assert moments[2]["span"] == 12.0  # drawn as a stretch of the timeline
 
 
-def test_the_headline_numbers_add_up_the_rides(tmp_path):
-    pd.DataFrame({"minutes": [10.0, 20.0], "vehicles_counted": [100, 300], "vehicles_parked": [60, 220],
-                  "vehicles_cross_side": [20, 40], "vehicles_adjacent_same": [10, 20], "vehicles_oncoming": [5, 10],
-                  "vehicles_ego_lane": [5, 10], "events_overtaken_by_vehicle": [3, 4],
+def test_the_rides_table_ends_with_their_sum(tmp_path):
+    pd.DataFrame({"video": ["VID_20260209_090112_00_001", "VID_20260209_183334_00_002"], "minutes": [10.0, 20.0],
+                  "vehicles_counted": [100, 300], "vehicles_parked": [60, 220], "events_overtaken_by_vehicle": [3, 4],
                   "events_close_pass_under_1p5m": [1, 2], "door_zone_seconds": [60, 300],
-                  "events_red_light_wait": [2, 3], "red_light_wait_seconds": [60, 120]}).to_csv(
-        tmp_path / "corpus_summary.csv", index=False)
-    figures = {f["value"]: f["label"] for f in build_site.at_a_glance(corpus=tmp_path)}
-    assert figures == {"30 min": "filmed on 2 rides", "400": "vehicles within 25 m of the rider",
-                       "7": "overtakes, 3 within 1.5 m", "20%": "of riding time in the door zone"}
+                  "events_red_light_wait": [2, 3]}).to_csv(tmp_path / "corpus_summary.csv", index=False)
+    first, second, total = build_site.ride_rows(corpus=tmp_path)
+    assert (first["ride"], first["when"], first["minutes"], first["door"]) == ("Ride 1", "9 Feb, morning", 10, 0.1)
+    assert second["when"] == "9 Feb, evening, dark"  # ride 2 was filmed after sunset
+    assert total == {"ride": "All rides", "when": "", "minutes": 30, "vehicles": 400, "overtakes": 7, "close": 3,
+                     "red_waits": 5, "door": 0.2}
 
 
 def test_the_page_carries_its_demos_and_the_template_is_filled():
     page = build_site.index_page({})
     assert "__REPO__" not in page and "<!--DATA-->" not in page and "const SITE = " in page
+    assert "{{" not in page  # every number its sentences quote was found
+    assert "assets/site.css?v=" in page and "assets/site.js?v=" in page  # a changed file is not taken from a cache
     for name, *_ in DEMOS:
         assert f"demos/{name}.mp4" in page

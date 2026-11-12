@@ -10,7 +10,8 @@ install. GitHub Pages serves it from the gh-pages branch, at https://robertn02.g
 The clips (a few hundred MB) live on that branch only, so main stays quick to clone (the Colab notebook clones it).
 The demos (2 minutes each) are rendered at the videos' own size and frame rate as H.264 at CRF 23, capped at
 5.5 Mbit/s so they stream and stay under GitHub's 100 MB a file. The page itself is scripts/site/ (template,
-stylesheet and script) filled with the tables' numbers; the review page is `bikesafe.review --export` (decisions made
+stylesheet and script) filled with the tables' numbers - it reads as a short research note whose figures are the
+demo player, the tables and the map; the review page is `bikesafe.review --export` (decisions made
 on it are downloaded and added with `bikesafe.review --import`). Needs the ride videos (BIKESAFE_VIDEOS) and the finished analysis
 (work/analysis, results/corpus). Posters for the README are written to demos/ as well.
 
@@ -24,6 +25,7 @@ Pages does: without them a browser cannot jump to a moment in a clip and plays i
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -41,27 +43,40 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS  # noqa: E402
 from bikesafe.exposure import RELIABLE_Z_M  # noqa: E402
+from bikesafe.review import CAUSES  # noqa: E402
 
 REPO = "https://github.com/Robertn02/Car-detection"
+SITE_URL = "https://robertn02.github.io/Car-detection"  # where GitHub Pages serves the built site
 COLAB = "https://colab.research.google.com/github/Robertn02/Car-detection/blob/main/scripts/colab_try_your_video.ipynb"
-# file name, ride, start (s), title, what to look for. Windows are outside the rides' privacy zones (bikesafe.review.
-# private_seconds) and were picked from the events: each shows what its title says.
-DEMOS = [("overlay_001_greenlane_590s", "VID_20260209_090112_00_001", 590, "Green-painted bike lane",
-          "The riding context turns to bike lane on the green lane, and the lines beside the rider turn green."),
-         ("overlay_006_overtakes_200s", "VID_20260224_162848_00_006", 200, "Bike lane beside traffic: three overtakes",
-          "Cars in the lane to the left pass the rider; each overtake is measured by its side gap."),
-         ("overlay_005_closepass_712s", "VID_20260224_091119_00_005", 712, "Two close passes and two red lights",
-          "Two stops at red lights, then two vehicles pass within 1.5 m on the left."),
-         ("overlay_005_following_260s", "VID_20260224_091119_00_005", 260, "Following in traffic",
-          "The car ahead in the rider's lane is red: in my lane, with its distance."),
-         ("overlay_006_parked_680s", "VID_20260224_162848_00_006", 680, "Red lights beside parked rows",
-          "Parked cars (grey) line the kerb while the rider waits at two red lights; side-road traffic is blue."),
-         ("overlay_002_night_340s", "VID_20260209_183334_00_002", 340, "At night: overtakes and close passes",
-          "Detection works by headlight and street light; lane paint is found where the light reaches it.")]
+# file name, ride, start (s), title, what is in it. Windows are outside the rides' privacy zones (bikesafe.review.
+# private_seconds) and were picked from the events: each shows what its text says.
+DEMOS = [("overlay_006_overtakes_200s", "VID_20260224_162848_00_006", 200, "Bike lane beside traffic",
+          "Afternoon traffic passes on the left while the rider keeps to a painted bike lane next to parked cars. "
+          "Three cars overtake, the closest at 1.7 m."),
+         ("overlay_005_closepass_712s", "VID_20260224_091119_00_005", 712, "Two close passes",
+          "Two waits at red lights, then two vehicles pass within 1.5 m. Just before the first, a car pulls out "
+          "across the bike lane; the software has it as parked."),
+         ("overlay_001_greenlane_590s", "VID_20260209_090112_00_001", 590, "Onto a green bike lane",
+          "A shared street, then a green-painted bike lane beside parked camper vans. One car passes at 1.3 m "
+          "near the end."),
+         ("overlay_002_night_340s", "VID_20260209_183334_00_002", 340, "After dark",
+          "The same pipeline at night, working from headlights and street lighting. Three overtakes, two of them "
+          "close."),
+         ("overlay_005_following_260s", "VID_20260224_091119_00_005", 260, "Behind a car",
+          "Riding in the lane behind other vehicles. Each is boxed in red with its distance."),
+         ("overlay_006_parked_680s", "VID_20260224_162848_00_006", 680, "Red lights and parked cars",
+          "Two waits at red lights on a street lined with parked cars. Cross traffic at the junctions is boxed "
+          "in blue.")]
 DURATION_S = 120
 # two minutes at the camera's size and frame rate: capped at 5.5 Mbit/s so a clip stays under GitHub's 100 MB a file
 CRF, MAX_MBPS = 23, 5.5
-HIGHLIGHT = ("overlay_006_overtakes_200s", 33, 14)  # the page's looping header clip: demo, from (s), seconds
+# Who to credit under the page's title, e.g. ["A. Rider", "B. Student"]; the line is left out while this is empty
+AUTHORS: list[str] = []
+# The page's worked example of what the labels miss: a demo, ride seconds of two stills from it, and what each shows
+CONTEXT_CASE = {"demo": "overlay_005_closepass_712s", "from_s": 802,
+                "stills": [(805.0, "A car pulls out across the bike lane. The software has it as parked, 3 m ahead."),
+                           (810.0, "The rider has moved left around it, and a pickup passes at 1.2 m.")]}
+CONTEXT = ROOT / "data" / "typology" / "event_context.csv"  # what led to a pass, as riders said on the review page
 NIGHT_RIDES = ("002", "004")
 POSTER_WIDTH = 1280
 CORPUS = ROOT / "results" / "corpus"
@@ -132,25 +147,27 @@ def render(out: Path, again: bool) -> None:
                         str(DURATION_S), "--crf", str(CRF), "--max-mbps", str(MAX_MBPS), "--out", str(clip)],
                        cwd=ROOT, check=True)
         poster(clip, clip.with_suffix(".jpg"), ROOT / "demos" / f"{name}.jpg")
-    highlight(out)
 
 
-def highlight(out: Path) -> None:
-    """The page's header clip: a few seconds of one demo, smaller, looping without sound."""
-    import imageio_ffmpeg
+def clock(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
 
-    name, start, seconds = HIGHLIGHT
-    source, clip = out / "demos" / f"{name}.mp4", out / "demos" / "highlight.mp4"
-    if not source.exists():
+
+def context_stills(out: Path) -> None:
+    """The stills of CONTEXT_CASE, cut from its demo clip (nothing to do before the clip is rendered)."""
+    start = next(start for name, _, start, *_ in DEMOS if name == CONTEXT_CASE["demo"])
+    clip = out / "demos" / f"{CONTEXT_CASE['demo']}.mp4"
+    if not clip.exists():
         return
-    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-loglevel", "error", "-y", "-ss", str(start), "-t", str(seconds),
-                    "-i", str(source), "-vf", "scale=1280:-2", "-c:v", "libx264", "-crf", "27", "-preset", "slow",
-                    "-an", "-movflags", "+faststart", str(clip)], check=True)
     cap = cv2.VideoCapture(str(clip))
-    ok, image = cap.read()
+    for i, (t, _) in enumerate(CONTEXT_CASE["stills"]):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(round((t - start) * cap.get(cv2.CAP_PROP_FPS))))
+        ok, image = cap.read()
+        if ok:
+            image = cv2.resize(image, (POSTER_WIDTH, round(image.shape[0] * POSTER_WIDTH / image.shape[1])),
+                               interpolation=cv2.INTER_AREA)
+            cv2.imwrite(str(out / "demos" / f"context_{i + 1}.jpg"), image, [cv2.IMWRITE_JPEG_QUALITY, 85])
     cap.release()
-    if ok:
-        cv2.imwrite(str(clip.with_suffix(".jpg")), image, [cv2.IMWRITE_JPEG_QUALITY, 82])
 
 
 def hex_colour(bgr: tuple[int, int, int]) -> str:
@@ -223,89 +240,162 @@ def exposure_data(rides: dict[str, pd.DataFrame]) -> dict:
 
 
 KINDS = {"close_pass": ("Close pass, under 1.5 m", "#c8322f"), "overtake": ("Overtaken", "#ff9600"),
-         "in_lane": ("Vehicle close ahead in my lane", "#eb2828"), "oncoming": ("Oncoming vehicle passes close", "#c83cc8"),
+         "in_lane": ("Vehicle close ahead in the lane", "#eb2828"), "oncoming": ("Oncoming vehicle passes close", "#c83cc8"),
          "red_wait": ("Waiting at a red light", "#8f1f1c"), "stop_sign": ("Stop sign", "#5a646b")}
-RELATION_MEANING = {"ego_lane": "in the lane the rider rides in", "adjacent_same": "same direction, another lane",
-                    "oncoming": "coming the other way", "parked": "at the kerb or in a lot",
-                    "cross_side": "on a side road or crossing"}
+RELATION_MEANING = {"ego_lane": "Ahead of the rider, in the lane the rider is using.",
+                    "adjacent_same": "Going the rider's way in another lane. Overtaking vehicles are here.",
+                    "oncoming": "Coming towards the rider on the same street.",
+                    "parked": "Stopped at the curb, in a parking lane or in a lot. Waiting in traffic is not parked.",
+                    "cross_side": "On a cross street or a driveway, or beyond a median."}
 SITE_FILES = ROOT / "scripts" / "site"  # the page's template, stylesheet and script
 
 
-def demo_moments(ride: str, start: int, corpus: Path = CORPUS, duration: int = DURATION_S) -> list[dict]:
+def beside_parked(timeline: pd.DataFrame, t: float) -> bool:
+    """Whether the rider was within door range of a parked car as a pass began (the second before to two after)."""
+    if "door_zone_parked" not in timeline:
+        return False
+    around = timeline[timeline.second.between(int(t) - 1, int(t) + 2)]
+    return bool((around.door_zone_parked.fillna(0) > 0).any())
+
+
+def demo_moments(ride: str, start: int, corpus: Path = CORPUS, duration: int = DURATION_S,
+                 context: Path = CONTEXT) -> list[dict]:
     """What happens in a demo clip, from the ride's events.csv, in time order: seconds into the clip, the kind
-    (KINDS), in words, and how long for a wait. A close pass is said once, as the overtake it is."""
+    (KINDS), in words, and how long for a wait. A close pass is said once, as the overtake it is, with what the
+    tables know of its setting (parked cars within door range on the other side) and, as `why`, what a rider said
+    led to it on the review page (`context`) - which the pipeline does not see."""
     path = corpus / ride / "events.csv"
     if not path.exists():
         return []
     ev = pd.read_csv(path)
     ev = ev[(ev.t_start >= start) & (ev.t_start < start + duration)].sort_values("t_start")
     close = set(ev.loc[ev.event == "close_pass_under_1p5m", "vehicle_id"].dropna())
+    timeline = corpus / ride / "timeline_1s.csv"
+    timeline = pd.read_csv(timeline) if timeline.exists() else pd.DataFrame(columns=["second"])
+    said = pd.read_csv(context) if context.exists() else pd.DataFrame(columns=["video", "track_id", "cause", "note"])
+    said = said[(said.video == ride) & ~said.cause.isin(["none", "unclear"])].set_index("track_id")
+    words = {key: text for key, text, _ in CAUSES}
     out = []
     for e in ev.itertuples():
         at = round(float(e.t_start) - start, 1)
         if e.event == "overtaken_by_vehicle":
             kind = "close_pass" if e.vehicle_id in close else "overtake"
-            words = "Close pass" if kind == "close_pass" else "Overtaken"
-            out.append({"t": at, "kind": kind, "text": f"{words} on the {e.side}, {float(e.clearance_m):.2f} m to the side"})
+            text = f"{'Close pass' if kind == 'close_pass' else 'Overtaken'}, {float(e.clearance_m):.1f} m on the {e.side}"
+            moment = {"t": at, "kind": kind, "text": text + (", beside parked cars" if beside_parked(timeline, e.t_start) else "")}
+            if e.track_id in said.index:
+                row = said.loc[e.track_id]
+                note = row.note if isinstance(row.note, str) and row.note.strip() else ""
+                moment["why"] = note or f"The rider says: {words.get(row.cause, row.cause)}."
+            out.append(moment)
         elif e.event == "red_light_wait":
-            out.append({"t": at, "kind": "red_wait", "text": f"Waits {float(e.duration_s):.0f} s at a red light",
+            out.append({"t": at, "kind": "red_wait", "text": f"Red light, {float(e.duration_s):.0f} s",
                         "span": round(min(float(e.duration_s), start + duration - float(e.t_start)), 1)})
         elif e.event == "vehicle_close_in_my_lane":
-            out.append({"t": at, "kind": "in_lane", "text": f"A vehicle {float(e.z_min_m):.0f} m ahead in my lane"})
+            out.append({"t": at, "kind": "in_lane", "text": f"Vehicle {float(e.z_min_m):.0f} m ahead in the lane"})
         elif e.event == "oncoming_close_pass":
-            out.append({"t": at, "kind": "oncoming", "text": "An oncoming vehicle passes close"})
+            out.append({"t": at, "kind": "oncoming", "text": "Oncoming vehicle passes close"})
         elif e.event == "stop_sign":
-            out.append({"t": at, "kind": "stop_sign", "text": "A stop sign"})
+            out.append({"t": at, "kind": "stop_sign", "text": "Stop sign"})
     return out
 
 
-def demo_tags(ride: str, start: int, moments: list[dict], corpus: Path = CORPUS, duration: int = DURATION_S) -> list[str]:
-    """A few words for a demo's card: night, the riding context it is mostly in, and what happens."""
+def demo_summary(ride: str, start: int, moments: list[dict], corpus: Path = CORPUS, duration: int = DURATION_S) -> str:
+    """One line for a demo's thumbnail: the ride, night, the riding context it is mostly in, and what happens."""
     line = pd.read_csv(corpus / ride / "timeline_1s.csv")
     window = line[(line.second >= start) & (line.second < start + duration)]
-    tags = []
+    parts = [f"Ride {int(ride[-3:])}"]
     if ride.endswith(NIGHT_RIDES):
-        tags.append("night")
+        parts.append("night")
     shares = window.scene.value_counts(normalize=True)
-    for scene, (label, _) in SCENES.items():
-        if shares.get(scene, 0) >= 0.3:
-            tags.append(label.lower())
+    parts += [label.lower() for scene, (label, _) in SCENES.items() if shares.get(scene, 0) >= 0.3]
     kinds = [m["kind"] for m in moments]
     plural = lambda n, word, words: f"{n} {word if n == 1 else words}"  # noqa: E731
     overtakes, close = kinds.count("overtake") + kinds.count("close_pass"), kinds.count("close_pass")
     if overtakes:
-        tags.append(plural(overtakes, "overtake", "overtakes"))
-    if close:
-        tags.append(plural(close, "close pass", "close passes"))
-    if "red_wait" in kinds:
-        tags.append("red lights" if kinds.count("red_wait") > 1 else "red light")
-    if kinds.count("in_lane") >= 3:
-        tags.append("following")
-    return tags
+        parts.append(plural(overtakes, "overtake", "overtakes") + (f" ({close} close)" if close else ""))
+    if kinds.count("red_wait"):
+        parts.append(plural(kinds.count("red_wait"), "red light", "red lights"))
+    return ", ".join(parts)
 
 
-def at_a_glance(corpus: Path = CORPUS) -> list[dict]:
-    """The four headline numbers of the rides, from the tables: value and what it is."""
+def ride_rows(corpus: Path = CORPUS) -> list[dict]:
+    """The rides as the page's first table: when, minutes, vehicles counted, overtakes, those under 1.5 m, waits at
+    red lights and the share of the time beside parked cars; the last row adds them up."""
     s = pd.read_csv(corpus / "corpus_summary.csv")
-    minutes = float(s.minutes.sum())
-    return [{"value": f"{minutes:.0f} min", "label": f"filmed on {len(s)} rides"},
-            {"value": f"{int(s.vehicles_counted.sum()):,}", "label": f"vehicles within {RELIABLE_Z_M:.0f} m of the rider"},
-            {"value": f"{int(s.events_overtaken_by_vehicle.sum())}",
-             "label": f"overtakes, {int(s.events_close_pass_under_1p5m.sum())} within 1.5 m"},
-            {"value": f"{s.door_zone_seconds.sum() / 60 / minutes:.0%}", "label": "of riding time in the door zone"}]
+    rows = []
+    for r in s.itertuples():
+        when = pd.to_datetime(r.video[4:19], format="%Y%m%d_%H%M%S", errors="coerce")
+        part = "" if pd.isna(when) else ("evening, dark" if r.video.endswith(NIGHT_RIDES) else
+                                         "morning" if when.hour < 12 else "afternoon")
+        rows.append({"ride": f"Ride {int(r.video[-3:])}", "when": "" if pd.isna(when) else f"{when.day} {when:%b}, {part}",
+                     "minutes": round(float(r.minutes)), "vehicles": int(r.vehicles_counted),
+                     "overtakes": int(r.events_overtaken_by_vehicle), "close": int(r.events_close_pass_under_1p5m),
+                     "red_waits": int(r.events_red_light_wait), "door": float(r.door_zone_seconds) / 60 / float(r.minutes)})
+    total = {"ride": "All rides", "when": "", "minutes": round(float(s.minutes.sum())),
+             "vehicles": int(s.vehicles_counted.sum()), "overtakes": int(s.events_overtaken_by_vehicle.sum()),
+             "close": int(s.events_close_pass_under_1p5m.sum()), "red_waits": int(s.events_red_light_wait.sum()),
+             "door": float(s.door_zone_seconds.sum()) / 60 / float(s.minutes.sum())}
+    return rows + [total]
 
 
-def accuracy_note(typology: Path = ROOT / "results" / "typology") -> str:
-    """How often the deployed model was right, on rides it was not trained on (empty without an evaluation)."""
+def accuracy(typology: Path = ROOT / "results" / "typology") -> dict:
+    """How often the deployed model was right on rides it was not trained on, among labelled vehicles within the
+    range relations are checked in: overall, by closest approach and per relation ({} without an evaluation)."""
     predictions = typology / "relation_lovo_predictions.csv"
     if not predictions.exists():
-        return ""
+        return {}
     summary = json.loads((typology / "evaluation_summary.json").read_text())
     p = pd.read_csv(predictions)
-    near = p[p.z_min <= summary.get("near_z_m", RELIABLE_Z_M)]
-    right = (near[f"pred_{summary['selected_model']}"] == near.label).mean()
-    return (f"The model gets {right:.0%} of {len(near)} labelled vehicles within {summary.get('near_z_m', RELIABLE_Z_M):.0f} m "
-            f"right, on rides it was not trained on; the labels come from AI-assisted review a person has yet to check. ")
+    limit = summary.get("near_z_m", RELIABLE_Z_M)
+    near = p[p.z_min <= limit]
+    right = near[f"pred_{summary['selected_model']}"] == near.label
+    edges = [e for e in (0, 8, 16) if e < limit] + [limit]
+    by_distance = [{"range": f"{a:.0f} to {b:.0f} m", "n": int(((near.z_min > a) & (near.z_min <= b)).sum()),
+                    "right": float(right[(near.z_min > a) & (near.z_min <= b)].mean())} for a, b in zip(edges, edges[1:])]
+    by_relation = {r: {"n": int((near.label == r).sum()), "right": float(right[near.label == r].mean())}
+                   for r in RELATIONS if (near.label == r).any()}
+    return {"right": float(right.mean()), "n": int(len(near)), "limit_m": float(limit), "trained_on": int(len(p)),
+            "by_distance": by_distance, "by_relation": by_relation}
+
+
+def facts(corpus: Path = CORPUS) -> dict[str, str]:
+    """The numbers the page's sentences quote ({{name}} in scripts/site/index.html), from the tables."""
+    rides = ride_rows(corpus)
+    total, s = rides[-1], pd.read_csv(corpus / "corpus_summary.csv")
+    count = len(rides) - 1
+    words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    out = {"rides": words[count] if count < len(words) else str(count), "minutes": str(total["minutes"]),
+           "vehicles": f"{total['vehicles']:,}",
+           "parked_share": f"{s.vehicles_parked.sum() / s.vehicles_counted.sum():.0%}",
+           "overtakes": str(total["overtakes"]), "close": str(total["close"]), "red_waits": str(total["red_waits"]),
+           "door_share": f"{total['door']:.0%}", "range_m": f"{RELIABLE_Z_M:.0f}",
+           "updated": f"{pd.Timestamp.now():%d %B %Y}".lstrip("0"),
+           "byline": (" and ".join([", ".join(AUTHORS[:-1]), AUTHORS[-1]] if len(AUTHORS) > 1 else AUTHORS) + ". ")
+           if AUTHORS else ""}
+    a = accuracy()
+    if a:
+        best = max(a["by_relation"], key=lambda r: a["by_relation"][r]["right"])
+        worst = min(a["by_relation"], key=lambda r: a["by_relation"][r]["right"])
+        out |= {"acc": f"{a['right']:.0%}", "acc_n": str(a["n"]), "trained_on": str(a["trained_on"]),
+                "acc_best": f"{a['by_relation'][best]['right']:.0%}", "acc_best_name": RELATION_TEXT[best],
+                "acc_worst": f"{a['by_relation'][worst]['right']:.0%}", "acc_worst_name": RELATION_TEXT[worst],
+                "acc_worst_n": str(a["by_relation"][worst]["n"])}
+    squeezed = 0  # close passes that began with parked cars within door range on the rider's other side
+    for events in sorted(corpus.glob("*/events.csv")):
+        timeline = events.with_name("timeline_1s.csv")
+        if timeline.exists():
+            line, ev = pd.read_csv(timeline), pd.read_csv(events)
+            squeezed += sum(beside_parked(line, t) for t in ev.t_start[ev.event == "close_pass_under_1p5m"])
+    out["squeezed"] = str(squeezed)
+    calibration = corpus / "metric_calibration.json"
+    checks = ([abs(e["now"]["gps_over_parked_closing"] - 1) for e in json.loads(calibration.read_text())["rides"].values()
+               if e.get("now")] if calibration.exists() else [])
+    out["gps_within"] = f"{max(checks):.0%}" if checks else "a few percent"
+    labels = ROOT / "data" / "typology" / "track_labels.csv"
+    if labels.exists():  # checked by a named person: not the AI-assisted passes, nor the review page's default name
+        who = pd.read_csv(labels).labeler.astype(str)
+        out["human_labels"] = str(int((~who.str.startswith("claude") & (who != "reviewer")).sum()))
+    return out
 
 
 def page_data(gps: dict, corpus: Path = CORPUS) -> dict:
@@ -315,32 +405,33 @@ def page_data(gps: dict, corpus: Path = CORPUS) -> dict:
         moments = demo_moments(ride, start, corpus)
         demos.append({"name": name, "title": title, "look": look, "ride": int(ride[-3:]), "start": start,
                       "duration": DURATION_S, "video": f"demos/{name}.mp4", "poster": f"demos/{name}.jpg",
-                      "tags": demo_tags(ride, start, moments, corpus), "moments": moments, "gps": gps.get(name)})
+                      "summary": demo_summary(ride, start, moments, corpus), "moments": moments, "gps": gps.get(name)})
     by_scene = pd.read_csv(ROOT / "results" / "typology" / "exposure_by_scene_overall.csv").set_index("scene")
     exposure = [{"scene": s, "label": label, "colour": colour, "minutes": float(by_scene.at[s, "minutes"]),
                  "per_min": {r: float(by_scene.at[s, r]) for r in RELATIONS}}
                 for s, (label, colour) in CONTEXT_COLOURS.items() if s in by_scene.index]
-    calibration = corpus / "metric_calibration.json"
-    rides = json.loads(calibration.read_text())["rides"] if calibration.exists() else {}
-    scales = [e["metric_scale"] for e in rides.values()]
-    checks = [abs(e["now"]["gps_over_parked_closing"] - 1) for e in rides.values() if e.get("now")]
-    calibrated = (f"Distances and speeds are calibrated against the rides' GPS, to within {max(checks):.0%}; "
-                  f"the camera alone read them {min(scales):.1f}-{max(scales):.1f} times too short. ") if checks else ""
+    case_start = next(start for name, _, start, *_ in DEMOS if name == CONTEXT_CASE["demo"])
+    context = {"demo": CONTEXT_CASE["demo"], "at": CONTEXT_CASE["from_s"] - case_start,
+               "stills": [{"src": f"demos/context_{i + 1}.jpg", "time": clock(t), "text": text}
+                          for i, (t, text) in enumerate(CONTEXT_CASE["stills"])]}
     return {"relations": [{"key": r, "label": RELATION_TEXT[r], "meaning": RELATION_MEANING[r],
                            "colour": hex_colour(RELATION_COLOURS_BGR[r])} for r in RELATIONS],
             "kinds": {k: {"label": label, "colour": colour} for k, (label, colour) in KINDS.items()},
-            "demos": demos, "figures": at_a_glance(corpus), "exposure": exposure,
-            "resultsLede": "What a handlebar camera adds up to over 112 minutes of commuting in Los Angeles.",
-            "fineprint": accuracy_note() + calibrated,
-            "tiles": {"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK}}
+            "demos": demos, "rides": ride_rows(corpus), "exposure": exposure, "accuracy": accuracy(),
+            "context": context, "tiles": {"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK}}
 
 
 def index_page(gps: dict) -> str:
-    """The project page: scripts/site/index.html with the page's data."""
+    """The project page: scripts/site/index.html with the page's data and the numbers its sentences quote."""
     template = (SITE_FILES / "index.html").read_text(encoding="utf-8")
+    for name, value in facts().items():
+        template = template.replace("{{" + name + "}}", value)
+    for name in ("site.css", "site.js"):  # a new version of either is fetched, not taken from a browser's cache
+        stamp = hashlib.md5((SITE_FILES / name).read_bytes()).hexdigest()[:8]
+        template = template.replace(f"assets/{name}", f"assets/{name}?v={stamp}")
     data = json.dumps(page_data(gps), separators=(",", ":")).replace("</", "<\\/")
     return (template.replace("__REPO__", REPO).replace("__COLAB__", COLAB).replace("__LEAFLET__", LEAFLET)
-            .replace("<!--DATA-->", f"<script>const SITE = {data};</script>"))
+            .replace("__SITE__", SITE_URL).replace("<!--DATA-->", f"<script>const SITE = {data};</script>"))
 
 
 # The exposure map: heat of per-second counts (or the riding context) as coloured lines over all rides, and the events.
@@ -457,20 +548,20 @@ def map_page() -> str:
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Exposure map</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{LEAFLET}/leaflet.css">
 <style>
-:root {{ --panel:rgba(22,22,21,0.92); --ink:#ececea; --muted:#a3a39d; --line:#3a3a36; --accent:#63a4e8; }}
+:root {{ --panel:rgba(17,19,21,0.93); --ink:#e7eaec; --muted:#98a2a8; --line:#2f353a; --accent:#6cc698; }}
 * {{ box-sizing:border-box; }}
-html, body {{ margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; }}
-.plate {{ display:inline-block; background:#1f6e42; color:#fff; font:700 .85rem "Overpass", sans-serif; padding:4px 9px 2px;
-  border-radius:6px; box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; margin-bottom:10px; }}
+html, body {{ margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 "Archivo", "Helvetica Neue", Arial, sans-serif; }}
+.home {{ display:inline-block; color:var(--muted); font-size:.85rem; font-weight:500; text-decoration:none; margin-bottom:12px; }}
+.home:hover {{ color:var(--ink); text-decoration:underline; }}
 #map {{ position:absolute; inset:0; background:#0e0e0d; }}
 #map .leaflet-tile-pane {{ filter:{DARK_TILES}; }}
 .panel {{ position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-width:calc(100% - 24px);
-  max-height:calc(100% - 24px); overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:10px;
-  padding:14px 16px; }}
-.panel h1 {{ font:800 22px/1.1 "Overpass", sans-serif; margin:0 0 4px; }} .panel p {{ margin:6px 0; }}
+  max-height:calc(100% - 24px); overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:4px;
+  padding:16px 18px; }}
+.panel h1 {{ font:650 22px/1.1 "Archivo", sans-serif; font-stretch:90%; margin:0 0 6px; }} .panel p {{ margin:6px 0; }}
 .muted {{ color:var(--muted); font-size:13px; }} a {{ color:var(--accent); }}
 .panel label {{ display:block; padding:3px 0; cursor:pointer; }}
 select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(--line); border-radius:6px; padding:4px 8px;
@@ -483,15 +574,15 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
 </style></head><body>
 <div id="map"></div>
 <div class="panel">
-  <a class="plate" href="../">Bike route vehicle typology</a>
+  <a class="home" href="../">Bike route vehicle typology</a>
   <h1>Exposure map</h1>
-  <p class="muted">Each second of the rides placed by its GPS track, with what the camera saw then. Each ride's
-  start and end are left out, within 400 to 800 m of them.</p>
+  <p class="muted">Every second of the five rides with GPS, placed on the street and colored by what the camera saw
+  there. The first and last 400 to 800 m of each ride are left off.</p>
   <div id="layers"></div>
   <p><select id="ride" aria-label="Ride"><option value="-1">All rides</option></select></p>
   <label><input type="checkbox" id="events" checked> Close passes and overtakes</label>
   <div id="legend"></div>
-  <p class="muted"><a href="../#demos">The demos</a></p>
+  <p class="muted"><a href="../#demos">Back to the clips</a></p>
 </div>
 <script src="{LEAFLET}/leaflet.js"></script>
 <script>
@@ -507,6 +598,7 @@ def write_pages(out: Path) -> None:
     for name in ("site.css", "site.js"):
         shutil.copyfile(SITE_FILES / name, out / "assets" / name)
     (out / "index.html").write_text(index_page(demo_gps(rides)), encoding="utf-8")
+    context_stills(out)
     if rides:
         (out / "map").mkdir(exist_ok=True)
         (out / "map" / "exposure.json").write_text(json.dumps(exposure_data(rides), separators=(",", ":")),
