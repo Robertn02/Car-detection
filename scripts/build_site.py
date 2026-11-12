@@ -44,6 +44,7 @@ sys.path.insert(0, str(ROOT))
 from bikesafe.common import RELATION_COLOURS_BGR, RELATION_TEXT, RELATIONS  # noqa: E402
 from bikesafe.exposure import RELIABLE_Z_M  # noqa: E402
 from bikesafe.review import CAUSES  # noqa: E402
+from bikesafe.review import page as review_page  # noqa: E402
 
 REPO = "https://github.com/Robertn02/Car-detection"
 SITE_URL = "https://robertn02.github.io/Car-detection"  # where GitHub Pages serves the built site
@@ -247,7 +248,9 @@ RELATION_MEANING = {"ego_lane": "Ahead of the rider, in the lane the rider is us
                     "oncoming": "Coming towards the rider on the same street.",
                     "parked": "Stopped at the curb, in a parking lane or in a lot. Waiting in traffic is not parked.",
                     "cross_side": "On a cross street or a driveway, or beyond a median."}
-SITE_FILES = ROOT / "scripts" / "site"  # the page's template, stylesheet and script
+SITE_FILES = ROOT / "scripts" / "site"  # the page's template, stylesheet, script and icon
+# copied to assets/; the PNGs are favicon.svg drawn at 32 px and, on its green, at 180 px (iOS home screens)
+ASSETS = ("site.css", "site.js", "favicon.svg", "favicon-32.png", "apple-touch-icon.png")
 
 
 def beside_parked(timeline: pd.DataFrame, t: float) -> bool:
@@ -459,7 +462,8 @@ function baseTiles(m, tiles) {
   setTimeout(() => { if (!loads) swap(); }, TILE_WAIT_MS);
   return layer;
 }
-const map = L.map("map", {preferCanvas: true});
+const map = L.map("map", {preferCanvas: true, zoomControl: false});
+L.control.zoom({position: "topright"}).addTo(map);  // the panel is top left
 baseTiles(map, TILES);
 const EVENT_COLOURS = {close_pass_under_1p5m: "#ff4d4f", oncoming_close_pass: "#d36bff",
   vehicle_close_in_my_lane: "#ffd60a", overtaken_by_vehicle: "#f2f2f2"};  // apart from the riding-context colours
@@ -521,9 +525,7 @@ fetch("exposure.json").then(r => r.json()).then(data => {
         run.push([p[0], p[1]]);
       });
       flush();
-      const seconds = pts.filter(p => p[k] > 0).length;
-      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer, near that
-        spot - a wait at a red light adds up. ${seconds} of ${pts.length} seconds had any.</p>`;
+      $("#legend").innerHTML = `<div class="ramp"></div><p class="muted">Brighter: more vehicles, for longer.</p>`;
     }
     shown.addTo(map);
     if ($("#events").checked) {
@@ -546,7 +548,9 @@ fetch("exposure.json").then(r => r.json()).then(data => {
 def map_page() -> str:
     return f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Exposure map</title>
+<title>Exposure map - BikeSafe</title>
+<link rel="icon" href="../assets/favicon-32.png" sizes="32x32"><link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{LEAFLET}/leaflet.css">
@@ -554,8 +558,16 @@ def map_page() -> str:
 :root {{ --panel:rgba(17,19,21,0.93); --ink:#e7eaec; --muted:#98a2a8; --line:#2f353a; --accent:#6cc698; }}
 * {{ box-sizing:border-box; }}
 html, body {{ margin:0; height:100%; background:#0e0e0d; color:var(--ink); font:15px/1.45 "Archivo", "Helvetica Neue", Arial, sans-serif; }}
-.home {{ display:inline-block; color:var(--muted); font-size:.85rem; font-weight:500; text-decoration:none; margin-bottom:12px; }}
-.home:hover {{ color:var(--ink); text-decoration:underline; }}
+body {{ display:flex; flex-direction:column; }}
+/* the project page's bar: its name and icon, and its sections, so the other pages are a click away */
+.bar {{ display:flex; align-items:center; gap:10px 22px; padding:10px 16px; background:#111315; border-bottom:1px solid var(--line);
+  font:500 14px "Archivo", sans-serif; }}
+.name {{ display:flex; align-items:center; gap:8px; color:var(--ink); font-weight:650; text-decoration:none; white-space:nowrap; }}
+.name img {{ width:20px; height:20px; display:block; }}
+nav {{ display:flex; gap:4px 20px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }}
+nav a {{ color:var(--muted); text-decoration:none; white-space:nowrap; }}
+nav a:hover {{ color:var(--ink); text-decoration:underline; }} nav a[aria-current=page] {{ color:var(--ink); }}
+.stage {{ position:relative; flex:1; isolation:isolate; }}
 #map {{ position:absolute; inset:0; background:#0e0e0d; }}
 #map .leaflet-tile-pane {{ filter:{DARK_TILES}; }}
 .panel {{ position:absolute; z-index:1000; top:12px; left:12px; width:310px; max-width:calc(100% - 24px);
@@ -570,11 +582,18 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
 .swatch.dot {{ border-radius:50%; }}
 .ramp {{ height:10px; border-radius:5px; margin:6px 0 2px;
   background:linear-gradient(90deg, {", ".join(HEAT_RAMP)}); }}
-@media (max-width:600px) {{ .panel {{ top:auto; bottom:12px; max-height:45%; }} }}
+@media (max-width:600px) {{
+  .bar {{ gap:10px; padding:8px 12px; }} nav {{ gap:14px; }}
+  .panel {{ top:auto; bottom:12px; max-height:45%; }}
+}}
 </style></head><body>
+<header class="bar">
+  <a class="name" href="../"><img src="../assets/favicon.svg" alt="">BikeSafe</a>
+  <nav aria-label="Sections"><a href="../#demos">Clips</a><a href="../#findings">Findings</a><a href="../#context">Limits</a><a href="./" aria-current="page">Map</a><a href="../review/">Review</a><a href="{REPO}">Code</a></nav>
+</header>
+<main class="stage">
 <div id="map"></div>
 <div class="panel">
-  <a class="home" href="../">Bike route vehicle typology</a>
   <h1>Exposure map</h1>
   <p class="muted">Every second of the five rides with GPS, placed on the street and colored by what the camera saw
   there. The first and last 400 to 800 m of each ride are left off.</p>
@@ -582,8 +601,8 @@ select {{ font:inherit; color:inherit; background:#1f1f1d; border:1px solid var(
   <p><select id="ride" aria-label="Ride"><option value="-1">All rides</option></select></p>
   <label><input type="checkbox" id="events" checked> Close passes and overtakes</label>
   <div id="legend"></div>
-  <p class="muted"><a href="../#demos">Back to the clips</a></p>
 </div>
+</main>
 <script src="{LEAFLET}/leaflet.js"></script>
 <script>
 const TILES = {json.dumps({"url": TILE_URL, "credit": TILE_CREDIT, "fallback": TILE_FALLBACK})};
@@ -595,10 +614,12 @@ const HEAT_RAMP = {json.dumps(HEAT_RAMP)};{EXPOSURE_MAP_JS}
 def write_pages(out: Path) -> None:
     rides = ride_gps()
     (out / "assets").mkdir(exist_ok=True)
-    for name in ("site.css", "site.js"):
+    for name in ASSETS:
         shutil.copyfile(SITE_FILES / name, out / "assets" / name)
     (out / "index.html").write_text(index_page(demo_gps(rides)), encoding="utf-8")
     context_stills(out)
+    if (out / "review").is_dir():  # its page again, so its bar keeps up with the site; its queues and media are kept
+        (out / "review" / "index.html").write_text(review_page(static=True), encoding="utf-8")
     if rides:
         (out / "map").mkdir(exist_ok=True)
         (out / "map" / "exposure.json").write_text(json.dumps(exposure_data(rides), separators=(",", ":")),
@@ -666,7 +687,7 @@ def main() -> None:
     parser.add_argument("--per-queue", type=int, default=20, help="Items per queue on the review page")
     parser.add_argument("--render-again", action="store_true", help="Render the demos even if they are there")
     parser.add_argument("--pages-only", action="store_true",
-                        help="Only write the pages and the map data (e.g. after bikesafe.gps); keep clips and review")
+                        help="Only write the pages and the map data (e.g. after bikesafe.gps); keep clips and review queues")
     parser.add_argument("--serve", type=int, metavar="PORT", help="Serve the built site locally instead of building it")
     args = parser.parse_args()
     if args.serve:

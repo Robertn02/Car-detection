@@ -92,6 +92,7 @@ CLIP_MAX_S = 8.0  # a longer track plays faster, so every clip loops in about th
 CLIP_PAD_S = 1.0  # shown before the track starts and after it ends
 MAX_PER_SIGN_TYPE = QUEUE_SIZE // 4  # a sign queue is not twenty of one type
 NO_GPS_PRIVATE_S = 180  # a ride without GPS: this much of its start and end is kept out of the public copy
+REPO_URL = "https://github.com/Robertn02/Car-detection"  # the public copy's "Code" link
 SIGN_TYPES_UI = ["stop", "yield", "speed_limit", "do_not_enter", "one_way", "no_turn", "parking", "bike", "pedestrian",
                  "warning", "street_name", "guide", "lane_use", "bus_stop", "roadwork", "other_sign", "not_a_sign"]
 
@@ -779,7 +780,7 @@ def make_handler(store: Store, html: str):
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Annotation review</title>
+<title>Annotation review</title>__ICON__
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
 <style>
@@ -791,8 +792,14 @@ PAGE = r"""<!doctype html>
 header { display:flex; gap:10px 14px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
   background:var(--panel); flex-wrap:wrap; position:sticky; top:0; z-index:5; }
 header h1 { font:650 17px "Archivo", sans-serif; font-stretch:92%; margin:0 6px 0 0; white-space:nowrap; }
-.home { color:var(--muted); font-weight:500; text-decoration:none; white-space:nowrap; padding-right:14px; border-right:1px solid var(--line); }
-.home:hover { color:var(--ink); text-decoration:underline; }
+/* the project page's bar, as on every page of the site: its name and icon, and its sections */
+.site { display:flex; align-items:center; gap:10px 22px; padding:10px 16px; background:var(--bg); border-bottom:1px solid var(--line);
+  font:500 14px "Archivo", sans-serif; }
+.site .name { display:flex; align-items:center; gap:8px; color:var(--ink); font-weight:650; text-decoration:none; white-space:nowrap; }
+.site .name img { width:20px; height:20px; display:block; }
+.site nav { display:flex; gap:4px 20px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
+.site nav a { color:var(--muted); text-decoration:none; white-space:nowrap; }
+.site nav a:hover { color:var(--ink); text-decoration:underline; } .site nav a[aria-current=page] { color:var(--ink); }
 .tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .tab { padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; white-space:nowrap; }
 .tab[aria-selected=true] { border-color:var(--line); background:var(--bg); font-weight:600; }
@@ -825,13 +832,13 @@ td.num { text-align:right; width:48px; font-variant-numeric:tabular-nums; }
 .hint { font-size:13px; color:var(--muted); }
 @media (hover:none) { .hint, .choice kbd { display:none; } }
 @media (max-width:600px) {
-  header { padding:8px 10px; } main { padding:10px; }
+  header, .site { padding:8px 10px; } .site { gap:10px; } .site nav { gap:12px; } main { padding:10px; }
   .decide { position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line); margin:0 -14px -14px;
     padding:8px 14px; border-radius:0 0 10px 10px; }
   .choices { margin:6px 0; } .choice { flex:1 1 auto; }
 }
 </style></head><body>
-<header>__HOME__<h1>Annotation review</h1>
+__SITE__<header><h1>Annotation review</h1>
 <div class="tabs" role="tablist" aria-label="Queues">
 <button class="tab" role="tab" aria-selected="true" data-kind="vehicle">Vehicles</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="event">Passes</button>
@@ -1091,10 +1098,16 @@ load();
 def page(static: bool = False) -> str:
     keys = "abcdefghijklmnopqrstuvwxyz"
     shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
-    home = '<a class="home" href="../">Bike route vehicle typology</a>' if static else ""  # the project page, when published
+    # published, the page sits under the project page (scripts/build_site.py): its bar and icon, a level up
+    site = (f'<div class="site"><a class="name" href="../"><img src="../assets/favicon.svg" alt="">BikeSafe</a>'
+            f'<nav aria-label="Sections"><a href="../#demos">Clips</a><a href="../#findings">Findings</a>'
+            f'<a href="../#context">Limits</a><a href="../map/">Map</a><a href="./" aria-current="page">Review</a>'
+            f'<a href="{REPO_URL}">Code</a></nav></div>') if static else ""
+    icon = ('<link rel="icon" href="../assets/favicon-32.png" sizes="32x32">'
+            '<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">'
+            '<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">') if static else ""
     return (PAGE.replace("__SIGNS__", json.dumps(shortcuts)).replace("__STATIC__", json.dumps(static))
-            .replace("__CAUSES__", json.dumps(CAUSES))
-            .replace("__HOME__", home))
+            .replace("__CAUSES__", json.dumps(CAUSES)).replace("__SITE__", site).replace("__ICON__", icon))
 
 
 MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"], "event": ["pass"]}

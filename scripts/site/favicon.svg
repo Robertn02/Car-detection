@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- a bike-route sign: the site's green street-name plate with a white bicycle -->
+  <rect x="1" y="1" width="62" height="62" rx="12" fill="#1f6e42"/>
+  <rect x="5.5" y="5.5" width="53" height="53" rx="8" fill="none" stroke="#fff" stroke-width="3"/>
+  <g fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -4)">
+    <circle cx="19.5" cy="40" r="8.5"/><circle cx="44.5" cy="40" r="8.5"/>
+    <path d="M19.5 40 26 27.5h14M19.5 40H30l10-12.5M30 40l-4.6-15M40 27.5l4.5 12.5M40 27.5l-1.4-5h4.6M22 24.5h6.5"/>
+  </g>
+</svg>

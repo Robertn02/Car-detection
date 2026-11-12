@@ -31,7 +31,8 @@ a:hover { text-decoration-thickness: 2px; }
 /* the top row: the project's name and where to go */
 .top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px 28px; flex-wrap: wrap;
   max-width: calc(var(--wide) + 2 * var(--gutter)); margin: 0 auto; padding: 22px var(--gutter) 0; font: 500 .94rem/1.3 var(--sans); }
-.name { color: var(--ink); text-decoration: none; font-weight: 650; }
+.name { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); text-decoration: none; font-weight: 650; }
+.name img { width: 20px; height: 20px; display: block; align-self: center; }
 .top nav { display: flex; flex-wrap: wrap; gap: 6px 26px; }
 .top nav a { color: var(--muted); text-decoration: none; }
 .top nav a:hover { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
@@ -59,7 +60,8 @@ h2 { font: 640 1.22rem/1.25 var(--sans); font-stretch: 92%; margin: 0; }
 .screen { grid-area: screen; background: var(--screen); border-radius: 3px; overflow: hidden; }
 .screen video { width: 100%; aspect-ratio: 16 / 9; display: block; background: var(--screen); }
 .side { grid-area: side; position: relative; min-height: 0; }
-.where { position: absolute; inset: 0 0 auto 0; height: 10.5rem; background: var(--wash); border-radius: 3px; overflow: hidden; }
+/* the maps get their own stacking context, so Leaflet's panes (z-index 400-1000) stay under anything above them */
+.where { position: absolute; inset: 0 0 auto 0; height: 10.5rem; background: var(--wash); border-radius: 3px; overflow: hidden; isolation: isolate; }
 .minimap { position: absolute; inset: 0; }
 .side.nomap .where { display: none; } .side.nomap .moments { inset: 0; }
 .leaflet-container { font-family: var(--sans); background: var(--wash); }
@@ -171,7 +173,7 @@ tr.total { border-bottom: 0; } tr.total th, tr.total td { font-weight: 650; bord
 @media (max-width: 640px) { .pair { grid-template-columns: 1fr; } }
 
 /* Figure 4: where the rides went */
-.routes { height: clamp(16rem, 34vw, 24rem); border-radius: 3px; overflow: hidden; background: var(--wash); }
+.routes { height: clamp(16rem, 34vw, 24rem); border-radius: 3px; overflow: hidden; background: var(--wash); isolation: isolate; }
 
 .foot { max-width: calc(var(--wide) + 2 * var(--gutter)); margin: clamp(64px, 9vw, 110px) auto 0; padding: 0 var(--gutter) 48px;
   font: 400 .84rem/1.5 var(--sans); color: var(--muted); }
