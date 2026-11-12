@@ -23,13 +23,13 @@ whole video (a 20-minute ride takes about 1.5 hours on an L4).
 
 ## Demos
 
-| Green-painted bike lane | Bike lane beside traffic: three overtakes | Two close passes and two red lights |
+| Bike lane beside traffic | Two close passes | Onto a green bike lane |
 | --- | --- | --- |
-| [![green lane](demos/overlay_001_greenlane_590s.jpg)](https://robertn02.github.io/Car-detection/#overlay_001_greenlane_590s) | [![overtakes](demos/overlay_006_overtakes_200s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_overtakes_200s) | [![close passes](demos/overlay_005_closepass_712s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_closepass_712s) |
-| **Following in traffic** | **Red lights beside parked rows** | **At night: overtakes and close passes** |
-| [![following](demos/overlay_005_following_260s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_260s) | [![parked](demos/overlay_006_parked_680s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_680s) | [![night](demos/overlay_002_night_340s.jpg)](https://robertn02.github.io/Car-detection/#overlay_002_night_340s) |
+| [![bike lane beside traffic](demos/overlay_006_overtakes_200s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_overtakes_200s) | [![two close passes](demos/overlay_005_closepass_712s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_closepass_712s) | [![green bike lane](demos/overlay_001_greenlane_590s.jpg)](https://robertn02.github.io/Car-detection/#overlay_001_greenlane_590s) |
+| **After dark** | **Behind a car** | **Red lights and parked cars** |
+| [![after dark](demos/overlay_002_night_340s.jpg)](https://robertn02.github.io/Car-detection/#overlay_002_night_340s) | [![behind a car](demos/overlay_005_following_260s.jpg)](https://robertn02.github.io/Car-detection/#overlay_005_following_260s) | [![red lights and parked cars](demos/overlay_006_parked_680s.jpg)](https://robertn02.github.io/Car-detection/#overlay_006_parked_680s) |
 
-Click a picture to play the clip (2 minutes, the camera's full size and frame rate); under each clip, its events jump
+Click a picture to play the clip (2 minutes, the camera's full size and frame rate); beside each clip, its events jump
 the video there. Box colours: red in my lane, orange other lane, magenta oncoming, grey parked, blue side road; lane lines
 are drawn on the road paint, green beside the rider in a bike lane.
 
@@ -71,7 +71,11 @@ python -m bikesafe.review      # open http://127.0.0.1:8765
 ```
 
 Shows the model's answers - vehicles, signs, plates - most likely errors first. Confirm or correct with one key;
-"Retrain" learns from the corrections. In Colab, the notebook's last cell opens it.
+"Retrain" learns from the corrections. A fourth queue, **Passes**, plays the seconds before each overtake and asks
+what led to it (a car pulling out, something blocking the lane, debris, a door, the lane narrowing, or nothing): the
+pipeline records the pass and its gap but not why the rider was there, and these answers are that record
+(`data/typology/event_context.csv`), shown beside the pass on the project page. In Colab, the notebook's last cell
+opens it.
 
 A copy that needs no server is on the [project page](https://robertn02.github.io/Car-detection/review/): enter
 your name, decide with a key or a button (it works on a phone too), and download the decisions (the button in the

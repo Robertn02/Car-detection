@@ -285,7 +285,9 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      demo windows lines appear or go 17-33 times a minute (40-78 before), most of them now these deliberate hides,
      and never three at once. Lines are drawn as strips of paint in perspective, down to the bottom of the picture
      where the paint continues, behind the vehicles. Box labels are short ("same way 9m"), placed nearest vehicle
-     first so none covers another (a far vehicle with no room keeps its box but no label), and the banner shows the GPS speed where the ride has a track and the riding context most common over 7 s.
+     first so none covers another (a far vehicle with no room keeps its box but no label), and the banner shows
+     the riding context most common over 7 s and the GPS speed where the ride has a track (else the video's own
+     speed, as its median over 7 s: it drops out for a second or two beside a large vehicle).
      Clips are H.264 (libx264, CRF 20, from the ffmpeg bundled with `imageio-ffmpeg`), so they play in a browser and
      in slides; the web demos are 2 minutes at CRF 23 capped at 5.5 Mbit/s, so each streams and stays under GitHub's
      100 MB a file (`scripts/build_site.py`).
@@ -315,8 +317,14 @@ Think of it as a data pipeline: a few heavy GPU extract steps, then cheap CPU tr
      spent where the model is weakest). The "verify" queue shows the existing labels, the ones the model disputes
      first; most of them came from AI-assisted review and are best checked by a person this way.
    - *Signs* (largest view and its context, type and text) and *plates* (crop and reading) have their own queues.
+   - *Passes*: each overtake, closest first, as a clip from 8 s before its vehicle appears to 4 s after, and the
+     question of what led to it - nothing unusual, a vehicle pulling out or in, a vehicle stopped in the lane, debris
+     or an object, a door or a person, the lane narrowing (keys 1-6), with an optional note. The answers go to
+     `event_context.csv` (video, track id, time, cause, note, reviewer) and the project page shows them beside the
+     pass in its clip.
    - Decisions go to `data/typology/track_labels.csv` (with anchors, so they survive a perception re-run),
-     `sign_labels.csv` and `plate_labels.csv`, and every decision with the model's answer to `review_log.csv`. The
+     `sign_labels.csv`, `plate_labels.csv` and `event_context.csv`, and every decision with the model's answer to
+     `review_log.csv`. The
      Progress tab turns the log into how often the reviewer kept each model's answer and the confusion between model
      and reviewer - a running measure of the models on exactly the cases people looked at (biased towards hard cases
      by the ranking, so it is a floor, not an overall accuracy).
@@ -402,6 +410,22 @@ to `bikesafe.perceive`.
 
 ## Known limitations
 
+- No context. Relations and events say what was around the rider, not why. At 13:25 of ride 005 a car pulls out of
+  a parking space across the bike lane (labelled parked, which it was a moment before), the rider moves left around
+  it and is passed at 1.2 m by a pickup: the tables hold one close pass and nothing about its cause. Two attempts to
+  find such a vehicle from the tables failed - its lateral offset (a quarter of ordinary parked cars measure within
+  0.6 m of the rider's path: the heading estimate is that noisy), and its box against the lane line of the same
+  sampled frame (the box corner is not on the ground: parked vans beside the line are flagged, this car is not).
+  A third, with the vehicles' outlines from the YOLOE segmenter against the lane line of the same frame, puts this
+  car's footprint within centimetres of the line, as close as its parked neighbours: at this angle a car turning out
+  and one parked beside the line look alike. It needs the vehicle's motion across the lane over several frames,
+  objects other than vehicles in the lane (debris), and the rider's own lateral movement. Until then the review page's
+  Passes queue asks riders what led to each pass (`data/typology/event_context.csv`); the project page shows the
+  answer beside the pass. What the tables do show is the setting: 13 of the 25 close passes began with parked cars
+  within door range on the rider's other side.
+- The rider's speed from the video (`ego_speed_mps`) drops towards zero for a second or two when a large vehicle
+  fills the side of the picture (10 -> 1 -> 13 m/s within three seconds at 13:24-13:27 of ride 005, and `ego_moving`
+  goes false with it). Rides with GPS have `gps_speed_mps`; the overlay's banner shows the median over 7 s.
 - Distances ahead and speeds are calibrated against GPS (step 5) per ride; the ride without a Strava track (005)
   takes the median factor. Lateral distances, and with them the 1.5 m close-pass gap, come from the width of cars
   seen square-on (1.95 m with mirrors) and are not checked against GPS, which cannot measure them; the lateral scale

@@ -11,6 +11,10 @@ said:
 * **Signs** - each physical sign's largest whole view with its type and text (bikesafe.signs); pick the type, correct the
   text, or mark it "not a traffic sign".
 * **Plates** - each plate crop with the text read (bikesafe.plates); correct it or mark it unreadable.
+* **Passes** - each overtake of the rider, from eight seconds before the vehicle appears: what led to it? The tables
+  hold the pass and its gap, not that a car pulling out of the kerb had pushed the rider towards the traffic, or that
+  debris lay in the bike lane. The reviewer picks a cause (keys 1-6) and may add a note; the answers are the record
+  of that context until the pipeline can see it, and then what it learns from.
 
 The queues put first what is most likely wrong, so a reviewer's time goes where the models fail: low model confidence,
 and conflicts between the model and the physics - "parked" while sitting in the rider's path or moving with the
@@ -18,7 +22,8 @@ rider, "oncoming" while its rear is seen, model and rule baseline disagreeing. I
 shows the existing labels instead (most of them came from AI-assisted review), those the model disagrees with first.
 
 Every decision goes to data/typology (or --labels) - track_labels.csv with track_anchors.csv (so labels survive a
-perception re-run), sign_labels.csv, plate_labels.csv - and to review_log.csv together with what the model had said.
+perception re-run), sign_labels.csv, plate_labels.csv, event_context.csv (what led to a pass) - and to review_log.csv
+together with what the model had said.
 The plates typed stay in plate_labels.csv, which is kept out of the repository; the log, which is not, only says
 whether the reading was kept, corrected or unreadable.
 The Progress tab turns that log into how often each model agreed with the reviewer, per class; "Retrain" runs
@@ -65,7 +70,17 @@ LABELS_DIR = ROOT / "data" / "typology"
 REVIEW_LOG_COLUMNS = ["time", "reviewer", "kind", "video", "item", "model", "model_conf", "human", "text", "model_text"]
 SIGN_LABEL_COLUMNS = ["video", "object_id", "frame", "x1", "y1", "x2", "y2", "label", "text", "reviewer", "time"]
 PLATE_LABEL_COLUMNS = ["video", "track_id", "frame", "x1", "y1", "x2", "y2", "text", "reviewer", "time"]
+EVENT_CONTEXT_COLUMNS = ["video", "track_id", "t_start", "cause", "note", "reviewer", "time"]
+# What led to a pass, as a rider would say it: key, the page's words, what it covers. In the page's key order.
+CAUSES = [("none", "nothing unusual", "The vehicle simply passed; nothing had pushed the rider towards it."),
+          ("pulling_out", "a vehicle pulling out or in", "A car leaving or entering a parking space or a driveway across the rider's lane."),
+          ("blocked", "a vehicle stopped in my lane", "Double-parked, loading or waiting in the bike lane."),
+          ("debris", "debris or an object", "Debris, a bin, a scooter or a pothole in the rider's lane."),
+          ("door", "a door or a person", "An open car door, or someone stepping into the lane."),
+          ("narrowing", "the lane narrows or ends", "The bike lane ends, road works, or the street narrows.")]
+EVENT_LEAD_S, EVENT_TAIL_S = 8.0, 4.0  # a pass is shown from this long before its vehicle appears to this long after
 QUEUE_SIZE = 40
+CLIPS = ("clip", "pass")  # media kinds that are video: a vehicle's track, and the lead-up to a pass
 MAX_PLATE_CHARS = 8  # US plates carry at most 8 characters (California 7)
 MIN_PLATE_W, MAX_PLATE_W = 40, 300  # px; narrower plates are unreadable to a reviewer too, wider boxes are not plates
 MAX_Z_M = 25.0  # vehicles reviewed: those that came this close (where relations are validated and matter)
@@ -168,8 +183,8 @@ def agreement(log: pd.DataFrame) -> dict:
     """Per kind: decisions, share where the reviewer kept the model's answer, and for vehicles and signs the counts of
     (model answer, reviewer answer) - the confusion of the model against the reviewer."""
     out = {}
-    for kind, rows in log[log.human.notna() & (log.human != "skip")].groupby("kind"):
-        decided = rows[rows.human != "unclear"]
+    for kind, rows in log[log.human.notna() & (log.human != "skip") & (log.kind != "event")].groupby("kind"):
+        decided = rows[rows.human != "unclear"]  # ("event": what led to a pass - the model has no answer to keep)
         agree = (decided.human == decided.model)
         if kind == "plate":
             agree = decided.text.fillna("") == decided.model_text.fillna("")
@@ -191,16 +206,21 @@ def _read(cap: cv2.VideoCapture, frame: int) -> np.ndarray | None:
     return image if ok else None
 
 
-def track_clip(video: Path, dets: pd.DataFrame, track_id: int, out: Path) -> bytes:
+def track_clip(video: Path, dets: pd.DataFrame, track_id: int, out: Path, lead_s: float = 0.0,
+               tail_s: float | None = None, max_s: float = CLIP_MAX_S) -> bytes:
     """The track as a short H.264 clip at the video's frame rate, its box in magenta and the other vehicles' in grey,
-    interpolated between the frames the detector ran on; a track longer than CLIP_MAX_S plays faster (the speed-up is
-    shown). Written to `out` and returned."""
+    interpolated between the frames the detector ran on; a clip longer than `max_s` plays faster (the speed-up is
+    shown). `lead_s` starts it that long before the track does and `tail_s` ends it that long into the track - what
+    led to a pass, not the whole pass. Written to `out` and returned."""
     t = dets[dets.track_id == track_id]
     cap = cv2.VideoCapture(str(video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
     pad = int(round(CLIP_PAD_S * fps))
-    start, end = max(0, int(t.frame.min()) - pad), int(t.frame.max()) + pad
-    speed = max(1, int(np.ceil((end - start + 1) / fps / CLIP_MAX_S)))
+    first, last = int(t.frame.min()), int(t.frame.max())
+    if tail_s is not None:
+        last = min(last, first + int(round(tail_s * fps)))
+    start, end = max(0, first - pad - int(round(lead_s * fps))), last + pad
+    speed = max(1, int(np.ceil((end - start + 1) / fps / max_s)))
     window = dets[dets.frame.between(start - 2 * pad, end + 2 * pad)]
     detected = np.unique(window.frame)
     stride = int(np.median(np.diff(detected))) if len(detected) > 1 else 1
@@ -212,6 +232,7 @@ def track_clip(video: Path, dets: pd.DataFrame, track_id: int, out: Path) -> byt
     part = out.with_name(f"{out.stem}.{threading.get_ident()}.part.mp4")
     writer = VideoOut(part, fps, size, crf=CLIP_CRF)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    written = 0
     for frame in range(start, end + 1):
         if not cap.grab():
             break
@@ -229,8 +250,12 @@ def track_clip(video: Path, dets: pd.DataFrame, track_id: int, out: Path) -> byt
         cv2.rectangle(image, (0, 0), (tw + 16, th + 16), (20, 20, 20), -1)
         cv2.putText(image, label, (8, th + 8), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
         writer.write(image)
+        written += 1
     writer.release()
     cap.release()
+    if not written:  # the video could not be read: no clip, and the item is left out
+        part.unlink(missing_ok=True)
+        return b""
     os.replace(part, out)
     return out.read_bytes()
 
@@ -431,6 +456,20 @@ class Store:
         return queue[:QUEUE_SIZE]
 
     # images and clips (cached on disk)
+    def event_queue(self) -> list[dict]:
+        """The overtakes of the rider that no one has yet said the cause of, the closest passes first."""
+        said = self._csv("event_context.csv", EVENT_CONTEXT_COLUMNS)
+        done = set(zip(said.video, said.track_id.astype(int)))
+        items = []
+        for path in sorted(self.corpus.glob("*/events.csv")):
+            events = pd.read_csv(path)
+            for e in events[events.event == "overtaken_by_vehicle"].itertuples():
+                if (path.parent.name, int(e.track_id)) not in done:
+                    items.append({"kind": "event", "video": path.parent.name, "item": int(e.track_id), "model": "overtake",
+                                  "t": round(float(e.t_start), 1), "lead": EVENT_LEAD_S, "duration": EVENT_TAIL_S,
+                                  "clearance": round(float(e.clearance_m), 1), "side": str(e.side)})
+        return sorted(items, key=lambda it: it["clearance"])[:QUEUE_SIZE]
+
     def fresh_cache(self, video: str) -> None:
         """Empty the ride's cached clips and crops when its tables changed since they were made: after a re-run the
         same track or object id can be another vehicle or sign."""
@@ -448,14 +487,16 @@ class Store:
 
     def image(self, kind: str, video: str, item: int, row: int | None = None) -> bytes:
         self.fresh_cache(video)
-        path = self.cache / video / f"{kind}_{item}.{'mp4' if kind == 'clip' else 'jpg'}"
+        path = self.cache / video / f"{kind}_{item}.{'mp4' if kind in CLIPS else 'jpg'}"
         if path.exists():
             return path.read_bytes()
-        if kind == "clip":
+        if kind in CLIPS:
             path.parent.mkdir(parents=True, exist_ok=True)
+            window = ({"lead_s": EVENT_LEAD_S, "tail_s": EVENT_TAIL_S, "max_s": EVENT_LEAD_S + EVENT_TAIL_S + 3 * CLIP_PAD_S}
+                      if kind == "pass" else {})
             with self.clip_lock:  # the page asks for a clip while prefetching it: encode it once
                 return path.read_bytes() if path.exists() else track_clip(self.video_path(video), self.dets(video),
-                                                                          item, path)
+                                                                          item, path, **window)
         if kind == "zoom":
             data = track_zoom(self.video_path(video), self.dets(video), item)
         elif kind == "sign":
@@ -496,6 +537,8 @@ class Store:
                 self._save_sign(video, int(d["item"]), int(d["row"]), human, str(d.get("text", "")), reviewer)
             elif kind == "plate" and human != "skip":
                 self._save_plate(video, int(d["item"]), str(d.get("text", "")).upper().strip(), reviewer)
+            elif kind == "event" and human != "skip":
+                self._save_event(video, int(d["item"]), human, str(d.get("text") or "").strip(), reviewer)
             if kind == "plate":
                 d = {**d, **plate_outcome(d.get("text"), d.get("model_text"))}
             entry = {"reviewer": reviewer, "kind": kind, "video": video, "item": d["item"], "model": d.get("model"),
@@ -560,6 +603,17 @@ class Store:
         pd.concat([labels, pd.DataFrame([new], columns=PLATE_LABEL_COLUMNS)], ignore_index=True).to_csv(
             self.labels_dir / "plate_labels.csv", index=False)
 
+    def _save_event(self, video: str, track_id: int, cause: str, note: str, reviewer: str) -> None:
+        """What led to the pass by this track's vehicle, replacing what was said of it before."""
+        events = pd.read_csv(self.corpus / video / "events.csv")
+        passes = events[(events.event == "overtaken_by_vehicle") & (events.track_id == track_id)]
+        said = self._csv("event_context.csv", EVENT_CONTEXT_COLUMNS)
+        said = said[~((said.video == video) & (said.track_id == track_id))]
+        new = {"video": video, "track_id": track_id, "t_start": float(passes.t_start.iloc[0]) if len(passes) else np.nan,
+               "cause": cause, "note": note, "reviewer": reviewer, "time": datetime.now().isoformat(timespec="seconds")}
+        pd.concat([said, pd.DataFrame([new], columns=EVENT_CONTEXT_COLUMNS)], ignore_index=True).to_csv(
+            self.labels_dir / "event_context.csv", index=False)
+
     def undo(self, reviewer: str, expect: dict | None = None) -> dict:
         """Take back the reviewer's last decision: the log entry, and a vehicle label it added. With `expect` (the
         kind, video and item the page means to take back) nothing is undone unless that is the last decision."""
@@ -587,7 +641,8 @@ class Store:
                     if len(anchors) and cards:
                         anchors[~anchors.card_id.isin(cards)].to_csv(self.labels_dir / "track_anchors.csv", index=False)
                 labels.to_csv(self.labels_dir / "track_labels.csv", index=False)
-            for name, key in (("sign_labels.csv", "object_id"), ("plate_labels.csv", "track_id")):
+            for name, key in (("sign_labels.csv", "object_id"), ("plate_labels.csv", "track_id"),
+                              ("event_context.csv", "track_id")):
                 if last.kind == name.split("_")[0]:
                     table = self._csv(name)
                     table[~((table.video == last.video) & (table[key] == int(last["item"])))].to_csv(
@@ -601,7 +656,8 @@ class Store:
         return {"agreement": agreement(log) if len(log) else {},
                 "track_labels": labels.groupby("labeler").label.count().to_dict() if len(labels) else {},
                 "sign_labels": int(len(self._csv("sign_labels.csv"))),
-                "plate_labels": int(len(self._csv("plate_labels.csv"))), "retrain": self.retrain,
+                "plate_labels": int(len(self._csv("plate_labels.csv"))),
+                "event_context": int(len(self._csv("event_context.csv"))), "retrain": self.retrain,
                 "retrainable": self.retrainable, "labels_dir": str(self.labels_dir)}
 
     def start_retrain(self) -> dict:
@@ -685,7 +741,8 @@ def make_handler(store: Store, html: str):
                 elif url.path == "/api/queue":
                     kind = q.get("kind", "vehicle")
                     items = (store.vehicle_queue(q.get("mode", "new")) if kind == "vehicle" else
-                             store.sign_queue() if kind == "sign" else store.plate_queue())
+                             store.sign_queue() if kind == "sign" else
+                             store.event_queue() if kind == "event" else store.plate_queue())
                     self.json(items)
                 elif url.path == "/api/img":
                     video = q["video"]
@@ -693,7 +750,7 @@ def make_handler(store: Store, html: str):
                         raise KeyError(video)
                     row = int(q["row"]) if "row" in q else None
                     self.send(store.image(q["kind"], video, int(q["item"]), row),
-                              "video/mp4" if q["kind"] == "clip" else "image/jpeg")
+                              "video/mp4" if q["kind"] in CLIPS else "image/jpeg")
                 elif url.path == "/api/progress":
                     self.json(store.progress())
                 else:
@@ -725,24 +782,24 @@ PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annotation review</title>__ICON__
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Overpass:wght@600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&display=swap" rel="stylesheet">
 <style>
-:root { --bg:#e6eaeb; --panel:#f4f6f6; --ink:#161a1d; --muted:#4f5a60; --line:#cdd4d6; --accent:#1f7445; --on-accent:#fff;
+:root { --bg:#ffffff; --panel:#f3f5f6; --ink:#16191b; --muted:#5d666b; --line:#dfe3e5; --accent:#14613e; --on-accent:#fff;
   --warn:#8a5a00; --ok:#2f855a; --bad:#c53030; }
-@media (prefers-color-scheme: dark) { :root { --bg:#161615; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39d;
-  --line:#323a3f; --accent:#35a565; --on-accent:#0b1a11; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
-* { box-sizing:border-box; } body { margin:0; font:15px/1.45 "Atkinson Hyperlegible", system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+@media (prefers-color-scheme: dark) { :root { --bg:#111315; --panel:#191c1f; --ink:#e7eaec; --muted:#98a2a8;
+  --line:#272c30; --accent:#6cc698; --on-accent:#0b1a11; --warn:#e0a54a; --ok:#5fc08c; --bad:#fc8181; } }
+* { box-sizing:border-box; } body { margin:0; font:15px/1.45 "Archivo", "Helvetica Neue", Arial, sans-serif; background:var(--bg); color:var(--ink); }
 header { display:flex; gap:10px 14px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line);
   background:var(--panel); flex-wrap:wrap; position:sticky; top:0; z-index:5; }
-header h1 { font:800 17px "Overpass", sans-serif; margin:0 6px 0 0; white-space:nowrap; }
-.plate { background:#1f6e42; color:#fff; font:700 13px "Overpass", sans-serif; padding:4px 9px 2px; border-radius:6px;
-  box-shadow:inset 0 0 0 2px #1f6e42, inset 0 0 0 4px #fff; text-decoration:none; white-space:nowrap; }
-.site { display:flex; align-items:center; gap:10px 18px; padding:8px 16px; background:var(--bg); border-bottom:1px solid var(--line); }
-.site nav { display:flex; gap:4px 16px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
-.site nav a { color:var(--ink); text-decoration:none; font:600 14px "Overpass", sans-serif; padding:3px 0 1px;
-  border-bottom:2px solid transparent; white-space:nowrap; }
-.site nav a:hover { border-bottom-color:#e2b21f; } .site nav a[aria-current=page] { border-bottom-color:var(--accent); }
-.tab, button, .choice { font-family:"Overpass", "Atkinson Hyperlegible", sans-serif; }
+header h1 { font:650 17px "Archivo", sans-serif; font-stretch:92%; margin:0 6px 0 0; white-space:nowrap; }
+/* the project page's bar, as on every page of the site: its name and icon, and its sections */
+.site { display:flex; align-items:center; gap:10px 22px; padding:10px 16px; background:var(--bg); border-bottom:1px solid var(--line);
+  font:500 14px "Archivo", sans-serif; }
+.site .name { display:flex; align-items:center; gap:8px; color:var(--ink); font-weight:650; text-decoration:none; white-space:nowrap; }
+.site .name img { width:20px; height:20px; display:block; }
+.site nav { display:flex; gap:4px 20px; margin-left:auto; overflow-x:auto; scrollbar-width:none; }
+.site nav a { color:var(--muted); text-decoration:none; white-space:nowrap; }
+.site nav a:hover { color:var(--ink); text-decoration:underline; } .site nav a[aria-current=page] { color:var(--ink); }
 .tabs { display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .tab { padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; white-space:nowrap; }
 .tab[aria-selected=true] { border-color:var(--line); background:var(--bg); font-weight:600; }
@@ -784,6 +841,7 @@ td.num { text-align:right; width:48px; font-variant-numeric:tabular-nums; }
 __SITE__<header><h1>Annotation review</h1>
 <div class="tabs" role="tablist" aria-label="Queues">
 <button class="tab" role="tab" aria-selected="true" data-kind="vehicle">Vehicles</button>
+<button class="tab" role="tab" aria-selected="false" data-kind="event">Passes</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="sign">Signs</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="plate">Plates</button>
 <button class="tab" role="tab" aria-selected="false" data-kind="progress">Progress</button></div>
@@ -801,6 +859,8 @@ const RELS = [["ego_lane","in my lane","In the lane the rider is travelling in: 
 const NAME = Object.fromEntries(RELS.map(([k, n]) => [k, n]));
 Object.assign(NAME, {unclear: "unclear", not_vehicle: "not a vehicle", skip: "skipped"});
 const SIGNS = __SIGNS__;
+const CAUSES = __CAUSES__;  // what led to a pass: [key, words, what it covers]
+Object.assign(NAME, Object.fromEntries(CAUSES.map(([k, n]) => [k, n])));
 // STATIC: the exported copy (python -m bikesafe.review --export), read from files with no server behind it; decisions
 // are kept in this browser until downloaded
 const STATIC = __STATIC__;
@@ -835,7 +895,7 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t ? "true" : "false"));
   kind = t.dataset.kind; history = []; load(); });
 $("#mode").onchange = () => { $("#mode").blur(); history = []; load(); };
-const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" ? "mp4" : "jpg"}`
+const img = (k, it, extra="") => STATIC ? `media/${it.video}/${k}_${it.item}.${k === "clip" || k === "pass" ? "mp4" : "jpg"}`
   : `/api/img?kind=${k}&video=${encodeURIComponent(it.video)}&item=${it.item}${extra}`;
 async function load() {
   $("#modebox").style.display = kind === "vehicle" ? "" : "none";
@@ -856,7 +916,7 @@ async function load() {
     queue = queue.filter(it => !saved.some(s => s.label !== "skip" && s.kind === it.kind && s.video === it.video && s.item === it.item));
   show();
 }
-function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else { new Image().src = img("plate", it); } } }
+function prefetch() { for (const it of queue.slice(pos + 1, pos + 3)) { if (kind === "vehicle") { fetch(img("clip", it)); new Image().src = img("zoom", it); } else if (kind === "sign") { new Image().src = img("sign", it, `&row=${it.row}`); } else if (kind === "event") { fetch(img("pass", it)); } else { new Image().src = img("plate", it); } } }
 const notices = () => (!stored ? `<div class="notice bad">This browser is not keeping your decisions (a private window, or storage is blocked): download them before you close the page.</div>` : "");
 const undoButton = () => history.length ? `<button id="undo">Undo <span class="hint">(Z)</span></button>` : "";
 function show() {
@@ -872,7 +932,7 @@ function show() {
     return;
   }
   const it = queue[pos]; $("#status").textContent = `${pos + 1} / ${queue.length}`;
-  if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else showPlate(it);
+  if (kind === "vehicle") showVehicle(it); else if (kind === "sign") showSign(it); else if (kind === "event") showEvent(it); else showPlate(it);
   document.querySelectorAll(".choice").forEach(c => c.onclick = () => decide(c.dataset.v));
   if ($("#undo")) $("#undo").onclick = undo;
   prefetch();
@@ -896,6 +956,18 @@ function showVehicle(it) {
   <div class="actions"><button class="primary" id="accept">${verify ? "Keep" : "Accept"} ${esc(name(preset))} <span class="hint">(Enter)</span></button>${undoButton()}</div></div>
   <p class="hint">Hover a choice for what it means &middot; keys 1-5, U, N, S &middot; Z undoes</p></div></div>`;
   $("#accept").onclick = () => decide(preset);
+}
+function showEvent(it) {
+  const choices = [...CAUSES.map(([k, n, tip], i) => [k, n, i + 1, tip]), ["unclear", "can't tell", "U", "The clip does not show enough."], ["skip", "skip", "S", "Decide later."]];
+  $("#main").innerHTML = `${notices()}<div class="grid"><div class="card"><video id="anim" src="${img("pass", it)}" autoplay muted loop playsinline controls></video>
+    <p class="muted small"><b>Magenta box: the vehicle that passes</b>, ${it.clearance} m to the ${esc(it.side)} &middot; ${ride(it.video)} at ${clock(it.t)} &middot; the clip starts ${it.lead} s before it appears</p>
+    <p class="muted small">${esc(it.video)}</p></div>
+  <div class="card"><p><b>What led to this pass?</b></p>
+  <p class="muted">The tables record the pass and its gap. They do not record whether something pushed the rider towards the traffic first.</p>
+  <label>Note <input id="text" size="34" placeholder="optional: what happened, in your words"></label>
+  <div class="decide"><div class="choices">${choiceButtons(choices, "")}</div>
+  <div class="actions">${undoButton()}</div></div>
+  <p class="hint">Hover a choice for what it covers &middot; keys 1-${CAUSES.length}, U, S &middot; T writes a note first &middot; Z undoes</p></div></div>`;
 }
 function showSign(it) {
   const text = readable(it.text) ? it.text : "";
@@ -932,6 +1004,7 @@ async function decide(v) {
   let label = v, out = {kind: it.kind, video: it.video, item: it.item, row: it.row, model: it.model, model_conf: it.model_conf ?? Math.max(...Object.values(it.proba || {0:0})), reviewer: $("#reviewer").value.trim()};
   if (it.kind === "plate") { label = v === "skip" ? "skip" : "plate"; out.text = v === "unreadable" ? "" : text.toUpperCase(); out.model_text = it.model; out.model = "plate"; }
   else if (it.kind === "sign") { out.text = text; out.model_text = it.text; }
+  else if (it.kind === "event") out.text = text;
   out.label = label; out.time = new Date().toISOString();
   busy = true;
   try {
@@ -952,20 +1025,24 @@ document.addEventListener("keydown", e => {
   if (t && (t.tagName === "SELECT" || (t.tagName === "INPUT" && !typing) || t.tagName === "TEXTAREA")) return;
   const k = e.key.toLowerCase();
   if (typing) {
-    if (e.key === "Enter") { e.preventDefault(); decide(kind === "plate" ? "read" : queue[pos] && queue[pos].model); }
+    if (e.key === "Enter") { e.preventDefault(); if (kind === "event") t.blur(); else decide(kind === "plate" ? "read" : queue[pos] && queue[pos].model); }
     else if (e.key === "Escape") t.blur();
     return;
   }
   const it = queue[pos];
   let act = null;  // the key's action; the key itself goes nowhere else (not into a field focused meanwhile)
   if (k === "z") act = undo;
-  else if (it && e.key === "Enter") act = () => decide(kind === "plate" ? "read" : (it.current || it.model));
+  else if (it && e.key === "Enter" && kind !== "event") act = () => decide(kind === "plate" ? "read" : (it.current || it.model));
   else if (it && kind !== "vehicle" && k === "t") act = () => $("#text").focus();
   else if (it && k === "s") act = () => decide("skip");
   else if (it && kind === "plate") { if (k === "x") act = () => decide("unreadable"); }
   else if (it && kind === "vehicle") {
     if (k.length === 1 && "12345".includes(k)) act = () => decide(RELS[+k - 1][0]);
     else if (k === "u") act = () => decide("unclear"); else if (k === "n") act = () => decide("not_vehicle");
+  }
+  else if (it && kind === "event") {
+    if (k.length === 1 && k >= "1" && +k <= CAUSES.length) act = () => decide(CAUSES[+k - 1][0]);
+    else if (k === "u") act = () => decide("unclear");
   }
   else if (it) { const hit = SIGNS.find(([, key]) => key === k); if (hit) act = () => decide(hit[0]); }
   if (act) { e.preventDefault(); act(); }
@@ -987,7 +1064,7 @@ async function undo() {
   finally { busy = false; }
 }
 function staticProgress() {
-  const kinds = ["vehicle", "sign", "plate"].map(k => `${saved.filter(d => d.kind === k && d.label !== "skip").length} ${k}s`).join(", ");
+  const kinds = ["vehicle", "event", "sign", "plate"].map(k => `${saved.filter(d => d.kind === k && d.label !== "skip").length} ${k}s`).join(", ");
   const recent = saved.slice(-8).reverse().map(d => `<tr><td>${esc(d.kind)}</td><td>${ride(d.video)}</td><td>${esc(d.kind === "plate" ? (d.text || "unreadable") : name(d.label))}</td><td class="muted">${esc((d.time || "").slice(0, 16).replace("T", " "))}</td></tr>`).join("");
   $("#main").innerHTML = `${notices()}<div class="card"><p>A copy of the review page that needs no server: the queues are as they were when it was made, and
     your decisions stay in this browser - <b>${decided()}</b> so far (${kinds}).</p>
@@ -1005,7 +1082,7 @@ async function progress() {
   const label = (k, v) => k === "plate" ? (v || "-") : name(v);
   const blocks = Object.entries(p.agreement).map(([k, a]) => `<div class="card"><h3>${esc(k)}</h3><p>${a.decisions} decisions, ${a.unclear} unclear &middot; model kept by the reviewer: <b>${a.model_kept === null ? "-" : Math.round(a.model_kept*100) + "%"}</b></p>
     ${a.confusion.length ? `<table><tr><th>model said</th><th>reviewer said</th><th>n</th></tr>${a.confusion.sort((x,y)=>y.n-x.n).map(c => `<tr><td>${esc(label(k, c.model))}</td><td>${esc(label(k, c.human))}</td><td>${c.n}</td></tr>`).join("")}</table>` : ""}</div>`).join("");
-  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${esc(k)} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels}</p>
+  $("#main").innerHTML = `<div class="card"><p>Vehicle labels by labeller: ${Object.entries(p.track_labels).map(([k,v]) => `${esc(k)} ${v}`).join(", ") || "none"} &middot; sign labels ${p.sign_labels} &middot; plate labels ${p.plate_labels} &middot; passes with a cause ${p.event_context}</p>
     ${p.retrainable ? `<p><button class="primary" id="retrain">Retrain on the labels</button> <span id="rt" class="muted">${esc(p.retrain.state)}: ${esc(p.retrain.log)}</span></p>`
       : `<p>Decisions are saved in <code>${esc(p.labels_dir)}</code>. The models learn from them on the machine with the labelled rides:
       there, <code>python -m bikesafe.review --import &lt;this run's folder&gt;</code> adds this run and its decisions, then Retrain.</p>`}</div>${blocks}`;
@@ -1022,17 +1099,18 @@ def page(static: bool = False) -> str:
     keys = "abcdefghijklmnopqrstuvwxyz"
     shortcuts = [(t, k) for t, k in zip(SIGN_TYPES_UI, (c for c in keys if c not in "stuz"))]
     # published, the page sits under the project page (scripts/build_site.py): its bar and icon, a level up
-    site = (f'<div class="site"><a class="plate" href="../">BikeSafe</a><nav aria-label="Sections">'
-            f'<a href="../#demos">Demos</a><a href="../#results">Results</a><a href="../map/">Map</a>'
-            f'<a href="./" aria-current="page">Review</a><a href="{REPO_URL}">Code</a></nav></div>') if static else ""
+    site = (f'<div class="site"><a class="name" href="../"><img src="../assets/favicon.svg" alt="">BikeSafe</a>'
+            f'<nav aria-label="Sections"><a href="../#demos">Clips</a><a href="../#findings">Findings</a>'
+            f'<a href="../#context">Limits</a><a href="../map/">Map</a><a href="./" aria-current="page">Review</a>'
+            f'<a href="{REPO_URL}">Code</a></nav></div>') if static else ""
     icon = ('<link rel="icon" href="../assets/favicon-32.png" sizes="32x32">'
             '<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">'
             '<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">') if static else ""
     return (PAGE.replace("__SIGNS__", json.dumps(shortcuts)).replace("__STATIC__", json.dumps(static))
-            .replace("__SITE__", site).replace("__ICON__", icon))
+            .replace("__CAUSES__", json.dumps(CAUSES)).replace("__SITE__", site).replace("__ICON__", icon))
 
 
-MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"]}
+MEDIA = {"vehicle": ["clip", "zoom"], "sign": ["sign", "signctx"], "plate": ["plate"], "event": ["pass"]}
 
 
 def private_seconds(corpus: Path, video: str) -> set[int]:
@@ -1050,7 +1128,8 @@ def private_seconds(corpus: Path, video: str) -> set[int]:
 def item_seconds(it: dict) -> range:
     """The seconds of the ride an item's media show."""
     start = float(it.get("t") or 0.0)
-    return range(int(start - CLIP_PAD_S - 1), int(start + float(it.get("duration") or 0.0) + CLIP_PAD_S) + 2)
+    return range(int(start - float(it.get("lead") or 0.0) - CLIP_PAD_S - 1),
+                 int(start + float(it.get("duration") or 0.0) + CLIP_PAD_S) + 2)
 
 
 def export(store: Store, out: Path, per_queue: int) -> None:
@@ -1059,7 +1138,7 @@ def export(store: Store, out: Path, per_queue: int) -> None:
     public. Decisions made there stay in the viewer's browser until downloaded; --import adds them to the labels."""
     shutil.rmtree(out / "media", ignore_errors=True)
     queues = {"vehicle_new": store.vehicle_queue("new"), "vehicle_verify": store.vehicle_queue("verify"),
-              "sign": store.sign_queue(), "plate": store.plate_queue()}
+              "sign": store.sign_queue(), "plate": store.plate_queue(), "event": store.event_queue()}
     private: dict[str, set[int]] = {}
     for name, items in queues.items():
         kept, hidden = [], 0
@@ -1074,7 +1153,7 @@ def export(store: Store, out: Path, per_queue: int) -> None:
             if not all(files.values()):
                 continue
             for kind, data in files.items():
-                path = out / "media" / it["video"] / f"{kind}_{it['item']}.{'mp4' if kind == 'clip' else 'jpg'}"
+                path = out / "media" / it["video"] / f"{kind}_{it['item']}.{'mp4' if kind in CLIPS else 'jpg'}"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
             kept.append(it)
@@ -1084,7 +1163,7 @@ def export(store: Store, out: Path, per_queue: int) -> None:
 
 
 VALID_LABELS = {"vehicle": set(RELATIONS) | {"unclear", "not_vehicle", "skip"}, "sign": set(SIGN_TYPES_UI) | {"skip"},
-                "plate": {"plate", "skip"}}
+                "plate": {"plate", "skip"}, "event": {cause for cause, *_ in CAUSES} | {"unclear", "skip"}}
 
 
 def import_decisions(store: Store, path: Path) -> tuple[int, int]:

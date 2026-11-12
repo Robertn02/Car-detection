@@ -7,9 +7,11 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 # Hugging Face models (segmenter, CLIP, Florence-2, depth) live in the project's cache unless HF_HOME says otherwise,
@@ -186,3 +188,56 @@ def read_json(path: Path) -> dict:
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# labels drawn on video
+
+
+@lru_cache(maxsize=16)
+def _label_font(px: int):
+    from PIL import ImageFont
+
+    try:
+        return ImageFont.load_default(size=px)  # Pillow >= 10.1: its built-in scalable sans, the same everywhere
+    except TypeError:
+        return ImageFont.load_default()
+
+
+@lru_cache(maxsize=4096)
+def label_chip(text: str, px: int = 22, bar: tuple[int, int, int] | None = None,
+               ink: tuple[int, int, int] = (255, 255, 255)) -> tuple[np.ndarray, np.ndarray]:
+    """A label for an overlay, as (BGR patch, opacity 0-1 per pixel): `text` `px` tall in a scalable sans on a dark,
+    slightly see-through strip with rounded corners and, with `bar`, a stripe of that BGR colour at its left - what
+    the label belongs to. OpenCV's own stroke fonts read as debug output at this size."""
+    from PIL import Image, ImageDraw
+
+    font = _label_font(px)
+    left, _, right, _ = font.getbbox(text)
+    ascent, descent = font.getmetrics() if hasattr(font, "getmetrics") else (px, 0)
+    pad_x, pad_y, stripe = round(px * 0.42), round(px * 0.2), round(px * 0.26) if bar else 0
+    w, h = stripe + (right - left) + 2 * pad_x, ascent + descent + 2 * pad_y
+    body = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(body).rounded_rectangle((0, 0, w - 1, h - 1), radius=round(px * 0.2), fill=214)
+    image = Image.new("RGB", (w, h), (26, 24, 22))  # drawn as BGR throughout: PIL only stores the numbers
+    draw = ImageDraw.Draw(image)
+    if bar:
+        draw.rectangle((0, 0, stripe - 1, h), fill=bar)
+    text_mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(text_mask).text((stripe + pad_x - left, pad_y), text, font=font, fill=255)
+    draw.text((stripe + pad_x - left, pad_y), text, font=font, fill=ink)
+    alpha = np.maximum(np.asarray(body, np.float32), np.asarray(text_mask, np.float32)) / 255.0
+    alpha[np.asarray(body) == 0] = 0.0  # nothing outside the rounded strip
+    return np.asarray(image, np.uint8).copy(), alpha
+
+
+def paste_chip(image: np.ndarray, chip: tuple[np.ndarray, np.ndarray], x: int, y: int) -> None:
+    """Blend a label_chip onto the frame with its top-left corner at (x, y), clipped to the picture."""
+    patch, alpha = chip
+    h, w = alpha.shape
+    x0, y0, x1, y1 = max(0, x), max(0, y), min(image.shape[1], x + w), min(image.shape[0], y + h)
+    if x1 <= x0 or y1 <= y0:
+        return
+    a = alpha[y0 - y: y1 - y, x0 - x: x1 - x, None]
+    region = image[y0:y1, x0:x1]
+    region[:] = (region * (1 - a) + patch[y0 - y: y1 - y, x0 - x: x1 - x] * a).astype(np.uint8)
